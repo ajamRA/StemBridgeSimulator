@@ -1,10 +1,8 @@
 import {
   BASE_RAIL_TARGET,
-  COMPRESSION_CAPACITY,
   DEFAULT_LOAD,
   NODE_PICK_RADIUS,
   SOFT_SNAP,
-  TENSION_CAPACITY,
 } from '../engine/constants';
 import { progressiveFailure } from '../engine/failure';
 import {
@@ -17,11 +15,13 @@ import {
   cloneMembers,
   countBaseRails,
   findMemberNearPoint,
+  isAbutmentDeckSpan,
   findNodeById,
   findOrCreateNodeNear,
   hasArchBetween,
   hasMember,
   isAllowedMemberForLength,
+  nextFreeBaseLane,
   pickableNodes,
   pruneOrphanApexes,
   promoteBaseRails,
@@ -58,7 +58,7 @@ import * as THREE from 'three';
 const CLICK_SLOP_PX = 6;
 
 const TIP_MS =
-  'Tarik untuk letak satu lidi. Tiada kotak automatik. + Base = 1 lidi penuh pada lorong Z seterusnya (×7 untuk 7 lidi selari).';
+  'Tarik = 1 lidi (tiada kotak auto). + Base = 1 lidi/lorong — ulang hingga 7. Uji tunjuk lidi yang patah.';
 
 interface BuildSnapshot {
   members: MemberDef[];
@@ -176,7 +176,7 @@ export class Game {
         } else return;
         setActiveLength(this.ui, this.selectedLength);
         this.flash(
-          `Panjang lidi: ${this.lengthLabel()}. Tip: + Base untuk 7 lidi penuh; Pendek untuk brace.`,
+          `Panjang lidi: ${this.lengthLabel()}. Tip: + Base = 1 lidi/lorong (ulang ×7); Pendek untuk brace.`,
           '',
         );
       });
@@ -519,7 +519,7 @@ export class Game {
     this.updateBaseCounter();
     const n = countBaseRails(this.members);
     this.flash(
-      `Base lidi panjang ditambah (lorong ${placed.lane + 1}/${BASE_RAIL_TARGET}). Base: ${n}/${BASE_RAIL_TARGET}.`,
+      `Base lidi panjang (lorong ${placed.lane + 1}/${BASE_RAIL_TARGET}). Base: ${n}/${BASE_RAIL_TARGET}. Klik lagi untuk lorong seterusnya.`,
       n >= BASE_RAIL_TARGET ? 'ok' : '',
     );
   }
@@ -527,6 +527,10 @@ export class Game {
   private canPlace(n1: number, n2: number): boolean {
     if (!isAllowedMemberForLength(this.nodes(), n1, n2, this.selectedLength)) {
       return false;
+    }
+    // Full deck abutment span → next free Z lane (parallel base), not mid-plane duplicate
+    if (isAbutmentDeckSpan(this.nodes(), n1, n2)) {
+      return nextFreeBaseLane(this.members) != null;
     }
     if (this.selectedShape === 'lengkung') {
       return !hasArchBetween(this.members, n1, n2) && !hasMember(this.members, n1, n2);
@@ -542,6 +546,12 @@ export class Game {
       );
       pruneOrphanFreeNodes(this.members, this.freeNodes);
       this.refreshNodes();
+      return;
+    }
+
+    // Pin↔roller full span: one parallel base rail per drag (fills next Z lane)
+    if (isAbutmentDeckSpan(this.nodes(), n1, n2)) {
+      this.placeBaseRail();
       return;
     }
 
@@ -625,7 +635,7 @@ export class Game {
     if (mode === 'bina') {
       this.invalidateTest();
       this.flash(
-        'Mod Bina — tarik = 1 lidi; dua nod = sambung; + Base = 1 lidi penuh lorong Z.',
+        'Mod Bina — tarik = 1 lidi; dua nod = sambung; + Base = 1 lidi penuh / lorong Z.',
         '',
       );
     } else if (mode === 'padam') {
@@ -641,10 +651,11 @@ export class Game {
     const nodes = this.nodes();
     const loads = this.buildLoads();
     const initial = solveTruss(nodes, this.members, loads);
-    if (!initial.ok && !initial.singular) {
+
+    if (!initial.ok && initial.members.length === 0) {
       renderResultPanel(this.ui.resultPanel, {
         tip: TIP_MS,
-        statusHtml: initial.message ?? 'Ujian gagal.',
+        statusHtml: initial.message ?? 'Ujian gagal — tiada ahli.',
         statusClass: 'bad',
       });
       this.lastResults = null;
@@ -654,6 +665,14 @@ export class Game {
     }
 
     const prog = progressiveFailure(nodes, this.members, loads);
+
+    // Keep first-step stress colours for display even after snaps
+    const displayResults =
+      prog.steps[0]?.members?.length
+        ? prog.steps[0]!.members
+        : initial.members.length
+          ? initial.members
+          : prog.final.members;
 
     if (prog.removedIds.length > 0) {
       this.pushUndo();
@@ -667,63 +686,49 @@ export class Game {
       this.updateBaseCounter();
     }
 
-    this.lastResults = prog.final.ok
-      ? prog.final.members
-      : initial.members.length
-        ? initial.members
-        : prog.steps[0]?.members ?? [];
+    this.lastResults = displayResults;
     this.tested = true;
     this.syncScene(true);
     this.updateLoadArrow();
 
-    if (prog.final.singular || prog.collapsed) {
-      renderResultPanel(this.ui.resultPanel, {
-        tip: TIP_MS,
-        statusHtml:
-          prog.final.message ??
-          'Struktur tidak stabil! Tambah segi tiga / brace. (Base multi-lorong ≈ 1 chord dalam DSM 2D.)',
-        statusClass: 'bad',
-        meta: `Ahli digugurkan: ${prog.removedIds.length}. Kapasiti: T=${TENSION_CAPACITY}, C=${COMPRESSION_CAPACITY}.`,
-      });
-      return;
-    }
-
-    if (!prog.final.ok) {
-      renderResultPanel(this.ui.resultPanel, {
-        tip: TIP_MS,
-        statusHtml: prog.final.message ?? 'Ujian gagal.',
-        statusClass: 'bad',
-      });
-      return;
-    }
-
-    const u = prog.final.maxUtilization;
-    const crit = prog.final.criticalMemberId;
-    const critRes = prog.final.members.find((m) => m.id === crit);
+    const first = prog.steps[0] ?? initial;
+    const crit = first.criticalMemberId;
+    const critRes = first.members.find((m) => m.id === crit);
     const forceStr = critRes
-      ? `${critRes.force >= 0 ? 'Tegangan' : 'Mampatan'} ${Math.abs(critRes.force).toFixed(1)}`
+      ? `${critRes.force >= 0 ? 'Tegangan' : 'Mampatan'} ${Math.abs(critRes.force).toFixed(1)} (u=${critRes.utilization.toFixed(2)})`
       : '—';
 
+    const broken = prog.removedIds;
     let statusClass: 'ok' | 'warn' | 'bad' = 'ok';
-    let msg = `Lulus! Utilisasi maks u=${u.toFixed(2)}`;
-    if (prog.removedIds.length > 0 && u < 1) {
-      statusClass = 'warn';
-      msg = `Sesetengah ahli gagal lalu digugurkan. Baki u=${u.toFixed(2)}`;
-    } else if (u >= 0.85) {
-      statusClass = 'warn';
-      msg = `Hampir had! u=${u.toFixed(2)} — kurangkan beban atau tambah ahli.`;
-    }
+    let msg: string;
 
-    const firstFailed = prog.steps[0]?.members.some((m) => m.failed);
-    if (firstFailed && prog.removedIds.length > 0) {
+    if (broken.length > 0) {
       statusClass = prog.collapsed ? 'bad' : 'warn';
+      const ids = broken.slice(0, 5).map((id) => `#${id}`).join(', ');
+      msg = prog.collapsed
+        ? `Runtuh! Patah pada lidi ${ids}${broken.length > 5 ? '…' : ''}. Lidi gelap merah = titik lemah.`
+        : `Patah pada lidi ${ids}${broken.length > 5 ? '…' : ''}! Lidi gelap merah = paling kritikal.`;
+    } else if (first.stabilized) {
+      statusClass = first.maxUtilization >= 0.85 ? 'bad' : 'warn';
+      msg =
+        crit != null
+          ? `Struktur lemah / kurang brace — tegasan tertinggi pada lidi #${crit}. Tambah segi tiga!`
+          : (first.message ?? 'Struktur lemah — lihat warna tegasan.');
+    } else if (first.maxUtilization >= 1) {
+      statusClass = 'bad';
+      msg = crit != null ? `Luluh! Kritikal lidi #${crit}.` : 'Ahli melebihi kapasiti.';
+    } else if (first.maxUtilization >= 0.85) {
+      statusClass = 'warn';
+      msg = `Hampir had! u=${first.maxUtilization.toFixed(2)} — kritikal lidi #${crit ?? '—'}.`;
+    } else {
+      msg = `Lulus! Utilisasi maks u=${first.maxUtilization.toFixed(2)}.`;
     }
 
     renderResultPanel(this.ui.resultPanel, {
       tip: TIP_MS,
       statusHtml: msg,
       statusClass,
-      meta: `Beban=${this.loadMagnitude} ↓. Kritikal: ${forceStr}. Base visual: ${countBaseRails(this.members)}/${BASE_RAIL_TARGET}. Fizik: DSM 2D (multi-rail ≈ 1 chord).`,
+      meta: `Beban=${this.loadMagnitude} ↓. Kritikal: ${forceStr}. Base: ${countBaseRails(this.members)}/${BASE_RAIL_TARGET} (kongsi beban). Digugurkan: ${broken.length}.`,
     });
   }
 
@@ -777,7 +782,7 @@ export class Game {
     this.refreshNodes();
     this.updateBaseCounter();
     this.setMode('bina');
-    this.flash('Reset — mula bina semula. Cuba + Base ×7.', 'ok');
+    this.flash('Reset — mula bina semula. + Base = 1 lidi/lorong (ulang hingga 7).', 'ok');
   }
 
   private syncScene(highlightFailed = false): void {
@@ -806,7 +811,7 @@ export class Game {
 
   private showIdleTip(): void {
     this.flash(
-      'Tarik untuk letak satu lidi. Tiada kotak automatik. Atau + Base ×7 untuk lidi panjang selari.',
+      'Tarik = 1 lidi. + Base = 1 lorong (ulang ×7). Uji = lihat lidi yang patah.',
       '',
     );
   }

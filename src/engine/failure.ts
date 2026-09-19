@@ -10,7 +10,8 @@ export interface ProgressiveResult {
 }
 
 /**
- * Solve, remove overstressed members (u≥1), re-solve until stable or singular.
+ * Solve, remove overstressed members (u≥1), re-solve until stable.
+ * Soft-stabilized solves still produce member colours — never a dead-end.
  */
 export function progressiveFailure(
   nodes: NodeDef[],
@@ -27,30 +28,33 @@ export function progressiveFailure(
     const result = solveTruss(nodes, current, loads);
     steps.push(result);
 
-    if (result.singular) {
-      collapsed = true;
+    if (!result.ok) {
+      // Truly empty / unusable — stop
+      collapsed = current.length === 0;
       break;
     }
-    if (!result.ok) break;
 
     const failed = result.members.filter((m) => m.failed);
     if (failed.length === 0) break;
 
-    for (const f of failed) {
-      removeMemberById(current, f.id);
-      removedIds.push(f.id);
+    // Snap the worst offenders first (clearest "patah" feedback)
+    failed.sort((a, b) => b.utilization - a.utilization);
+    const toRemove = failed.slice(0, Math.max(1, Math.ceil(failed.length / 2)));
+    for (const f of toRemove) {
+      if (removeMemberById(current, f.id)) removedIds.push(f.id);
     }
 
     if (current.length === 0) {
       collapsed = true;
       steps.push({
-        ok: false,
-        singular: true,
+        ok: true,
+        singular: false,
+        stabilized: true,
         message: 'Semua ahli gagal. Struktur runtuh!',
         displacements: new Map(),
         members: [],
         maxUtilization: 1,
-        criticalMemberId: null,
+        criticalMemberId: removedIds[removedIds.length - 1] ?? null,
       });
       break;
     }

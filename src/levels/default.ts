@@ -18,7 +18,7 @@ export const defaultLevel: LevelConfig = {
   name: 'Simple Span',
   nameMs: 'Rentang Mudah',
   tipMs:
-    'Susun 7 lidi panjang sebagai base, kemudian brace dengan pendek. (+ Base = 1 lidi penuh span; klik kosong = nod soft-snap.)',
+    'Tapak 12×7. Tarik = 1 lidi. + Base = 1 lorong (ulang ×7). Uji = lihat mana patah.',
   span: SPAN,
   defaultLoad: DEFAULT_LOAD,
 };

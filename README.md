@@ -29,11 +29,15 @@ npm run preview  # preview build
 npm test         # DSM + length/base-rail checks (vitest)
 ```
 
+## Classroom workflow — tapak 12×7 + 7 lidi panjang as base
+
+Deck magnets: **12 points × 7 parallel Z lines** (flat tapak). Optional brace level is minimal (not a tall 4–5 point Y cage).
+
 ## Classroom workflow — 7 lidi panjang as base
 
 Matches a real popsicle-stick / lidi challenge (reference patterns A–J):
 
-1. Click **`+ Base (lidi panjang)`** up to **7** times — each click drops **one full-span stick** (left abutment → right) in the next free Z lane across the deck width.
+1. Click **`+ Base (1 lorong)`** up to **7** times — each click drops **one full-span stick** (left abutment → right) in the next free Z lane across the deck width.
 2. Watch the counter: **`Base panjang: n/7`**.
 3. Switch to **Pendek** (or Auto) and brace: verticals, diagonals, cross-braces between nodes — **any angle** is allowed when ends snap to nodes.
 4. Optional: click empty space to place a **free joint** (soft grid magnet), then connect two nodes with Lurus / Lengkung.
@@ -53,11 +57,11 @@ The canvas is a real 3D scene — left-drag to orbit, scroll to zoom, right-drag
 ## How to play
 
 1. **Bina**
-   - **`+ Base`** — one-click full-span Panjang rail (preferred for the 7-stick deck).
-   - Or click two nodes / click-drag; **Panjang** allows chords up to the full span (10).
+   - **`+ Base`** — one full-span rail per click on the next free Z lane (repeat up to 7).
+   - Or click two nodes / click-drag; **Panjang** allows chords up to the full span (11).
    - Click empty space → soft-snapped free node, then click a second node to connect.
    - **Lurus** vs **Lengkung** (Lengkung inserts an upward apex + two axial legs).
-2. Supports: left **pin**, right **roller**, span 10.
+2. Supports: left **pin**, right **roller**, span 11 (12 deck points).
 3. Adjust **Beban** (vertical load on mid-span deck node).
 4. **Uji** — sticks colour green → yellow → orange → red → dark red (fail).
 5. **Padam** / **Undo** / **Reset** as needed.
@@ -84,7 +88,8 @@ Angles are unrestricted (not only ortho / 45°) as long as both ends are nodes.
 | `BASE_RAIL_TARGET` | 7 | Classroom parallel base count |
 
 - **MVP physics = 2D axial DSM** on the primary XY truss.
-- **Multi-rail deck is approximate:** only the **first** base rail is structural in `K`; the other parallel lanes are `visualOnly` (same XY would otherwise duplicate stiffness). Side braces / free nodes still enter the solve normally. Near/far mirrors and transverse Z braces remain visual.
+- **Multi-rail deck load-sharing:** all parallel base rails enter `K` (same XY × N ≈ N×EA) so 7 lidi matter in Uji.
+- **Uji never dead-ends on singular K:** soft-spring stabilization still colours sticks and names the critical / broken member.
 - Axial truss members only (no bending).
 - Utilisation `u = |F| / capacity`. Fail when `u ≥ 1`.
 

@@ -31,7 +31,7 @@ export function mountUI(app: HTMLElement): UIHandles {
         <button type="button" id="btn-padam" title="Padam ahli">Padam</button>
         <button type="button" id="btn-undo" title="Undo">Undo</button>
         <button type="button" id="btn-reset" class="danger" title="Reset">Reset</button>
-        <button type="button" id="btn-base" class="accent" title="Tambah 1 lidi panjang merentangi span pada lorong seterusnya">+ Base (lidi panjang)</button>
+        <button type="button" id="btn-base" class="accent" title="Tambah 1 lidi panjang penuh pada lorong Z seterusnya (ulang hingga 7)">+ Base (1 lorong)</button>
       </div>
       <div class="load-control">
         <span class="base-counter" id="base-counter" title="Sasaran cabaran bilik darjah">Base panjang: 0/${BASE_RAIL_TARGET}</span>
@@ -58,8 +58,8 @@ export function mountUI(app: HTMLElement): UIHandles {
     </header>
     <canvas id="game-canvas"></canvas>
     <aside class="result-panel" id="result-panel">
-      <div class="tip">Tarik untuk letak satu lidi. Tiada kotak automatik.</div>
-      <div class="status">Mod: <strong>Bina</strong> — tarik = 1 lidi; klik dua nod = sambung; <strong>+ Base</strong> = 1 lidi penuh pada lorong Z seterusnya.</div>
+      <div class="tip">Tarik = 1 lidi. + Base = 1 lorong (ulang ×7). Uji tunjuk lidi yang patah.</div>
+      <div class="status">Mod: <strong>Bina</strong> — tarik = 1 lidi; klik dua nod = sambung; <strong>+ Base</strong> = 1 lidi penuh / lorong Z.</div>
       <div class="legend">
         <span><i style="background:#43a047"></i>Rendah</span>
         <span><i style="background:#fdd835"></i>Sederhana</span>

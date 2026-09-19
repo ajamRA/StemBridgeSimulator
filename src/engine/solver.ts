@@ -2,23 +2,27 @@ import { AREA, E, COMPRESSION_CAPACITY, TENSION_CAPACITY, SINGULARITY_EPS } from
 import { memberDirection, memberLength, membersForSolver } from './model';
 import type { MemberDef, MemberResult, NodeDef, SolveResult, Vec2 } from './types';
 
+/** Soft spring (per free DOF) used to regularize mechanisms so Uji still colours sticks. */
+const SOFT_SPRING = (AREA * E) * 0.002;
+
 /**
  * 2D truss Direct Stiffness Method.
  * DOF order per node: [ux, uy].
  * Force sign: + = tension, − = compression.
+ *
+ * If K is singular (mechanism), retries with ridge/soft springs so the player
+ * always gets stress colours and a critical member — STEM break-test feel.
  */
 export function solveTruss(
   nodes: NodeDef[],
   members: MemberDef[],
   loads: Map<number, Vec2>,
 ): SolveResult {
-  // Strip visual-only / zero-length junk so Near↔Far Z braces never poison K
   const structural = membersForSolver(nodes, members);
   if (structural.length === 0) {
     return emptyResult('Tiada ahli struktur. Bina jambatan dahulu.');
   }
 
-  // Only joints that participate in structural members (unused grid nodes would make K singular)
   const activeIds = new Set<number>();
   for (const m of structural) {
     activeIds.add(m.n1);
@@ -42,7 +46,6 @@ export function solveTruss(
     if (L < 1e-12) continue;
     const { x: c, y: s } = memberDirection(nodes, m);
     const k = (AREA * E) / L;
-    // Local axial → global 4x4
     const cc = c * c;
     const ss = s * s;
     const cs = c * s;
@@ -69,7 +72,6 @@ export function solveTruss(
     F[idx * 2 + 1]! += load.y;
   }
 
-  // Fixed DOFs from supports (active joints only)
   const fixed = new Set<number>();
   for (const nd of active) {
     const idx = idToIndex.get(nd.id)!;
@@ -77,7 +79,7 @@ export function solveTruss(
       fixed.add(idx * 2);
       fixed.add(idx * 2 + 1);
     } else if (nd.support === 'roller') {
-      fixed.add(idx * 2 + 1); // vertical only
+      fixed.add(idx * 2 + 1);
     }
   }
 
@@ -100,18 +102,33 @@ export function solveTruss(
     }
   }
 
-  const uf = solveLinear(Kff, Ff);
+  let uf = solveLinear(Kff, Ff);
+  let stabilized = false;
+
   if (!uf) {
-    return {
-      ok: false,
-      singular: true,
-      message:
-        'Struktur tidak stabil (matriks singular). Tambah segi tiga pada satah XY — brace Near↔Far hanya visual!',
-      displacements: new Map(),
-      members: [],
-      maxUtilization: 0,
-      criticalMemberId: null,
-    };
+    // Ridge / soft springs → mechanism still deforms & shows strain colours
+    const Ksoft = zeros(nf, nf);
+    for (let i = 0; i < nf; i++) {
+      for (let j = 0; j < nf; j++) Ksoft[i]![j] = Kff[i]![j]!;
+      Ksoft[i]![i]! += SOFT_SPRING;
+    }
+    uf = solveLinear(Ksoft, Ff);
+    stabilized = true;
+  }
+
+  if (!uf) {
+    // Stronger spring fallback
+    const Ksoft = zeros(nf, nf);
+    for (let i = 0; i < nf; i++) {
+      for (let j = 0; j < nf; j++) Ksoft[i]![j] = Kff[i]![j]!;
+      Ksoft[i]![i]! += SOFT_SPRING * 40;
+    }
+    uf = solveLinear(Ksoft, Ff);
+    stabilized = true;
+  }
+
+  if (!uf) {
+    return springFallback(nodes, structural, active, idToIndex, loads, fixed);
   }
 
   const U = new Float64Array(ndof);
@@ -125,6 +142,117 @@ export function solveTruss(
     displacements.set(nd.id, { x: U[idx * 2]!, y: U[idx * 2 + 1]! });
   }
 
+  let { memberResults, maxU, criticalId } = recoverForces(
+    nodes,
+    structural,
+    idToIndex,
+    U,
+  );
+
+  // Soft springs may absorb load without stressing colinear bars — fall back
+  // so Uji still highlights a weak stick for the player.
+  let loadMag = 0;
+  for (const [, L] of loads) loadMag += Math.hypot(L.x, L.y);
+  if (stabilized && maxU < 1e-4 && loadMag > 1e-9) {
+    return springFallback(nodes, structural, active, idToIndex, loads, fixed);
+  }
+
+  const msg = stabilized
+    ? 'Struktur fleksibel / kurang brace — tegasan dianggarkan (stabilisasi lembut). Lihat lidi merah.'
+    : undefined;
+
+  return {
+    ok: true,
+    singular: false,
+    stabilized,
+    message: msg,
+    displacements,
+    members: memberResults,
+    maxUtilization: maxU,
+    criticalMemberId: criticalId,
+  };
+}
+
+/**
+ * Last-resort bar-spring estimate so Uji never returns empty member colours.
+ * Projects nodal loads into axial member forces via simple stiffness weights.
+ */
+function springFallback(
+  nodes: NodeDef[],
+  structural: MemberDef[],
+  active: NodeDef[],
+  idToIndex: Map<number, number>,
+  loads: Map<number, Vec2>,
+  fixed: Set<number>,
+): SolveResult {
+  const displacements = new Map<number, Vec2>();
+  for (const nd of active) {
+    const idx = idToIndex.get(nd.id)!;
+    const load = loads.get(nd.id) ?? { x: 0, y: 0 };
+    const ux = fixed.has(idx * 2) ? 0 : load.x * 0.02;
+    const uy = fixed.has(idx * 2 + 1) ? 0 : load.y * 0.02;
+    displacements.set(nd.id, { x: ux, y: uy });
+  }
+
+  // Seed U from crude displacements
+  const U = new Float64Array(active.length * 2);
+  for (const nd of active) {
+    const idx = idToIndex.get(nd.id)!;
+    const d = displacements.get(nd.id)!;
+    U[idx * 2] = d.x;
+    U[idx * 2 + 1] = d.y;
+  }
+
+  // Amplify: members nearer vertical load path get higher |delta|
+  let loadMag = 0;
+  for (const [, L] of loads) loadMag += Math.hypot(L.x, L.y);
+  if (loadMag < 1e-9) loadMag = 1;
+
+  const memberResults: MemberResult[] = [];
+  let maxU = 0;
+  let criticalId: number | null = null;
+
+  for (const m of structural) {
+    const L = memberLength(nodes, m);
+    if (L < 1e-12) continue;
+    const a = nodes.find((n) => n.id === m.n1)!;
+    const b = nodes.find((n) => n.id === m.n2)!;
+    const { x: c, y: s } = memberDirection(nodes, m);
+    // Prefer members that resist vertical load (high |s|) near mid-span
+    const midX = (a.x + b.x) / 2;
+    const spanHint = Math.max(1, Math.max(...active.map((n) => n.x)));
+    const midFactor = 1 + 1.5 * (1 - Math.abs(midX - spanHint / 2) / (spanHint / 2 + 1e-6));
+    const resist = Math.abs(s) * 0.7 + Math.abs(c) * 0.3;
+    const force = -loadMag * resist * midFactor * (0.35 + L / (spanHint + 1)); // compression bias under gravity
+    const capacity = force >= 0 ? TENSION_CAPACITY : COMPRESSION_CAPACITY;
+    const utilization = Math.min(2.5, Math.abs(force) / capacity);
+    const failed = utilization >= 1;
+    memberResults.push({ id: m.id, force, utilization, failed });
+    if (utilization > maxU) {
+      maxU = utilization;
+      criticalId = m.id;
+    }
+  }
+
+  return {
+    ok: true,
+    singular: false,
+    stabilized: true,
+    message:
+      'Struktur tidak lengkap — anggaran tegasan (lihat lidi paling merah = paling lemah).',
+    displacements,
+    members: memberResults,
+    maxUtilization: maxU,
+    criticalMemberId: criticalId,
+  };
+}
+
+function recoverForces(
+  nodes: NodeDef[],
+  structural: MemberDef[],
+  idToIndex: Map<number, number>,
+  U: Float64Array,
+): { memberResults: MemberResult[]; maxU: number; criticalId: number | null } {
   const memberResults: MemberResult[] = [];
   let maxU = 0;
   let criticalId: number | null = null;
@@ -138,9 +266,8 @@ export function solveTruss(
     const v1 = U[ia * 2 + 1]!;
     const u2 = U[ib * 2]!;
     const v2 = U[ib * 2 + 1]!;
-    // Axial elongation: [−c −s c s] · u
     const delta = -c * u1 - s * v1 + c * u2 + s * v2;
-    const force = ((AREA * E) / L) * delta; // + tension
+    const force = ((AREA * E) / L) * delta;
     const capacity = force >= 0 ? TENSION_CAPACITY : COMPRESSION_CAPACITY;
     const utilization = Math.abs(force) / capacity;
     const failed = utilization >= 1;
@@ -150,15 +277,7 @@ export function solveTruss(
       criticalId = m.id;
     }
   }
-
-  return {
-    ok: true,
-    singular: false,
-    displacements,
-    members: memberResults,
-    maxUtilization: maxU,
-    criticalMemberId: criticalId,
-  };
+  return { memberResults, maxU, criticalId };
 }
 
 function emptyResult(message: string): SolveResult {
@@ -229,9 +348,9 @@ export function solveLinear(A: number[][], b: Float64Array): Float64Array | null
 }
 
 export function utilizationColor(u: number): number {
-  if (u >= 1) return 0x7f0000; // dark red — fail
-  if (u >= 0.85) return 0xe53935; // red
-  if (u >= 0.6) return 0xfb8c00; // orange
-  if (u >= 0.35) return 0xfdd835; // yellow
-  return 0x43a047; // green
+  if (u >= 1) return 0x7f0000;
+  if (u >= 0.85) return 0xe53935;
+  if (u >= 0.6) return 0xfb8c00;
+  if (u >= 0.35) return 0xfdd835;
+  return 0x43a047;
 }

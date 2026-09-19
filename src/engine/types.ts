@@ -62,6 +62,8 @@ export interface MemberResult {
 export interface SolveResult {
   ok: boolean;
   singular: boolean;
+  /** True when K was regularized (soft springs) so Uji can still show stress. */
+  stabilized?: boolean;
   message?: string;
   displacements: Map<number, Vec2>;
   members: MemberResult[];

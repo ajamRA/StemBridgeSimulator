@@ -56,9 +56,9 @@ export function findNodeById(nodes: NodeDef[], id: number): NodeDef | undefined 
   return nodes.find((n) => n.id === id);
 }
 
-/** Mid-span deck node (default load point) */
+/** Mid-span deck node (default load point) — nearest grid x on deck. */
 export function defaultLoadNodeId(nodes: NodeDef[]): number {
-  const midX = (SPAN * GRID) / 2;
+  const midX = Math.floor(SPAN / 2) * GRID;
   const n = nodes.find((nd) => nd.isDeck && Math.abs(nd.x - midX) < 1e-9 && !nd.isFree);
   return n?.id ?? nodes.find((nd) => nd.isDeck)?.id ?? 0;
 }
@@ -111,8 +111,13 @@ export function hasBaseLane(members: MemberDef[], lane: number): boolean {
   return members.some((m) => m.role === 'base' && m.zLane === lane);
 }
 
+/** Unique occupied deck Z lanes (arch legs on one lane count as one rail). */
 export function countBaseRails(members: MemberDef[]): number {
-  return members.filter((m) => m.role === 'base').length;
+  const lanes = new Set<number>();
+  for (const m of members) {
+    if (m.role === 'base' && m.zLane != null) lanes.add(m.zLane);
+  }
+  return lanes.size;
 }
 
 /** Next free deck lane index, or null if all BASE_RAIL_TARGET lanes are filled. */
@@ -121,6 +126,18 @@ export function nextFreeBaseLane(members: MemberDef[]): number | null {
     if (!hasBaseLane(members, i)) return i;
   }
   return null;
+}
+
+/** True if n1–n2 is the full deck chord between pin and roller abutments. */
+export function isAbutmentDeckSpan(nodes: NodeDef[], n1: number, n2: number): boolean {
+  const a = findNodeById(nodes, n1);
+  const b = findNodeById(nodes, n2);
+  if (!a || !b) return false;
+  const pin = (n: NodeDef) =>
+    n.isDeck && n.support === 'pin' && !n.isFree && !n.isApex;
+  const roller = (n: NodeDef) =>
+    n.isDeck && n.support === 'roller' && !n.isFree && !n.isApex;
+  return (pin(a) && roller(b)) || (roller(a) && pin(b));
 }
 
 export function addMember(
@@ -133,7 +150,12 @@ export function addMember(
 ): MemberDef | null {
   if (extra?.role === 'base') {
     if (extra.zLane == null) return null;
-    if (hasBaseLane(members, extra.zLane)) return null;
+    if (hasBaseLane(members, extra.zLane)) {
+      // Allow second Lengkung leg on the same lane (same archGroupId).
+      const gid = extra.archGroupId;
+      const sameLane = members.filter((m) => m.role === 'base' && m.zLane === extra.zLane);
+      if (gid == null || sameLane.some((m) => m.archGroupId !== gid)) return null;
+    }
   } else if (hasMember(members, n1, n2)) {
     return null;
   }
@@ -238,15 +260,15 @@ export function cloneMembers(members: MemberDef[]): MemberDef[] {
  * Members that may enter the 2D axial DSM.
  *
  * Drops:
- * - visualOnly bars (extra parallel base rails, etc.)
+ * - non-base visualOnly bars (Near↔Far junk)
  * - self-loops / zero XY length
  *
- * Multi-rail deck: only the first (structural) base chord is solved; extra
- * lanes are visual. Side truss braces / free nodes still contribute fully.
+ * Parallel base rails (all Z lanes) DO enter the solve so 7 lidi share load —
+ * same XY chord × N rails ≈ N×EA axial stiffness (classroom load-sharing feel).
  */
 export function membersForSolver(nodes: NodeDef[], members: MemberDef[]): MemberDef[] {
   return members.filter((m) => {
-    if (m.visualOnly) return false;
+    if (m.visualOnly && m.role !== 'base') return false;
     if (m.n1 === m.n2) return false;
     const a = findNodeById(nodes, m.n1);
     const b = findNodeById(nodes, m.n2);
@@ -515,6 +537,199 @@ export function allNodes(grid: NodeDef[], apexes: NodeDef[], free: NodeDef[] = [
 /** Pickable build nodes only (exclude Lengkung apexes). */
 export function pickableNodes(nodes: NodeDef[]): NodeDef[] {
   return nodes.filter((n) => !n.isApex);
+}
+
+
+export type BendTarget =
+  | {
+      kind: 'straight';
+      member: MemberDef;
+      mid: Vec2;
+    }
+  | {
+      kind: 'arch';
+      archGroupId: number;
+      apex: NodeDef;
+      n1: number;
+      n2: number;
+      mid: Vec2;
+    };
+
+function distToSegmentParam(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): { d: number; t: number; qx: number; qy: number } {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const len2 = abx * abx + aby * aby;
+  if (len2 < 1e-12) {
+    return { d: Math.hypot(px - ax, py - ay), t: 0, qx: ax, qy: ay };
+  }
+  let t = ((px - ax) * abx + (py - ay) * aby) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const qx = ax + t * abx;
+  const qy = ay + t * aby;
+  return { d: Math.hypot(px - qx, py - qy), t, qx, qy };
+}
+
+/**
+ * Pick the middle of a stick for bow editing.
+ * Prefers mid-chord (t∈[0.28,0.72]) of straight members, or arch apex / chord mid.
+ */
+export function findBendTargetNearPoint(
+  nodes: NodeDef[],
+  members: MemberDef[],
+  px: number,
+  py: number,
+  threshold: number,
+): BendTarget | null {
+  let best: BendTarget | null = null;
+  let bestD = threshold;
+
+  // Arch groups first (apex is the natural handle)
+  const seen = new Set<number>();
+  for (const m of members) {
+    if (m.archGroupId == null || !m.archChord) continue;
+    if (seen.has(m.archGroupId)) continue;
+    seen.add(m.archGroupId);
+    const [c1, c2] = m.archChord;
+    const a = findNodeById(nodes, c1);
+    const b = findNodeById(nodes, c2);
+    if (!a || !b) continue;
+    const legs = members.filter((x) => x.archGroupId === m.archGroupId);
+    const endIds = new Set([c1, c2]);
+    const apexId = legs
+      .flatMap((l) => [l.n1, l.n2])
+      .find((id) => !endIds.has(id));
+    const apex = apexId != null ? findNodeById(nodes, apexId) : undefined;
+    if (!apex) continue;
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const dApex = Math.hypot(px - apex.x, py - apex.y);
+    const dMid = Math.hypot(px - mid.x, py - mid.y);
+    const d = Math.min(dApex, dMid);
+    if (d < bestD) {
+      bestD = d;
+      best = {
+        kind: 'arch',
+        archGroupId: m.archGroupId,
+        apex,
+        n1: c1,
+        n2: c2,
+        mid,
+      };
+    }
+  }
+
+  for (const m of members) {
+    if (m.archGroupId != null) continue;
+    const a = findNodeById(nodes, m.n1);
+    const b = findNodeById(nodes, m.n2);
+    if (!a || !b) continue;
+    const { d, t } = distToSegmentParam(px, py, a.x, a.y, b.x, b.y);
+    if (t < 0.28 || t > 0.72) continue;
+    if (d < bestD) {
+      bestD = d;
+      best = {
+        kind: 'straight',
+        member: m,
+        mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+      };
+    }
+  }
+  return best;
+}
+
+/**
+ * Convert a straight member into a Lengkung arch with apex at `apexPos`.
+ * Preserves role / zLane / visualOnly (for base rails).
+ */
+export function convertMemberToArch(
+  apexNodes: NodeDef[],
+  members: MemberDef[],
+  memberId: number,
+  apexPos: Vec2,
+): ArchPlacement | null {
+  const m = members.find((x) => x.id === memberId);
+  if (!m || m.archGroupId != null) return null;
+  const n1 = m.n1;
+  const n2 = m.n2;
+  const role = m.role;
+  const zLane = m.zLane;
+  const visualOnly = m.visualOnly;
+  removeMemberById(members, memberId);
+
+  const apex: NodeDef = {
+    id: nextApexNodeId++,
+    x: apexPos.x,
+    y: apexPos.y,
+    support: 'none',
+    isDeck: false,
+    isApex: true,
+  };
+  apexNodes.push(apex);
+  const gid = nextArchGroupId++;
+  const chord: [number, number] = [n1, n2];
+  const extra = {
+    shape: 'lengkung' as const,
+    archGroupId: gid,
+    archChord: chord,
+    role,
+    zLane,
+    visualOnly,
+  };
+  const leg1 = addMember(members, n1, apex.id, extra);
+  const leg2 = addMember(members, apex.id, n2, extra);
+  if (!leg1 || !leg2) {
+    if (leg1) removeMemberById(members, leg1.id);
+    if (leg2) removeMemberById(members, leg2.id);
+    const i = apexNodes.findIndex((n) => n.id === apex.id);
+    if (i >= 0) apexNodes.splice(i, 1);
+    // restore straight on failure
+    addMember(members, n1, n2, {
+      shape: 'lurus',
+      role,
+      zLane,
+      visualOnly,
+    });
+    return null;
+  }
+  return { apex, leg1, leg2, archGroupId: gid };
+}
+
+/** Move an existing Lengkung apex to a new XY position. */
+export function moveArchApex(apex: NodeDef, pos: Vec2): void {
+  apex.x = pos.x;
+  apex.y = pos.y;
+}
+
+/**
+ * Apply interactive bow: convert straight→arch or move existing apex.
+ * Returns the bend target after mutation (always arch).
+ */
+export function applyBendAt(
+  apexNodes: NodeDef[],
+  members: MemberDef[],
+  target: BendTarget,
+  pos: Vec2,
+): BendTarget | null {
+  if (target.kind === 'straight') {
+    const placed = convertMemberToArch(apexNodes, members, target.member.id, pos);
+    if (!placed) return null;
+    return {
+      kind: 'arch',
+      archGroupId: placed.archGroupId,
+      apex: placed.apex,
+      n1: placed.leg1.archChord![0],
+      n2: placed.leg1.archChord![1],
+      mid: target.mid,
+    };
+  }
+  moveArchApex(target.apex, pos);
+  return target;
 }
 
 export type { StickLengthPreset };

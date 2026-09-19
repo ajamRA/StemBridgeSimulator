@@ -47,7 +47,7 @@ describe('DSM truss sanity', () => {
     expect(Math.abs(u.y - expectedUy)).toBeLessThan(1e-6);
   });
 
-  it('detects unstable mechanism (colinear bars on pin-roller)', () => {
+  it('soft-stabilizes unstable mechanism and still reports member stress', () => {
     const nodes = [
       { id: 0, x: 0, y: 0, support: 'pin' as const, isDeck: true },
       { id: 1, x: 1, y: 0, support: 'none' as const, isDeck: true },
@@ -59,7 +59,10 @@ describe('DSM truss sanity', () => {
     ];
     const loads = new Map<number, Vec2>([[1, { x: 0, y: -5 }]]);
     const result = solveTruss(nodes, members, loads);
-    expect(result.singular || !result.ok).toBe(true);
+    expect(result.ok).toBe(true);
+    expect(result.stabilized).toBe(true);
+    expect(result.members.length).toBe(2);
+    expect(result.criticalMemberId).not.toBeNull();
   });
 
   it('stable triangle on pin-roller span', () => {
@@ -92,24 +95,25 @@ describe('DSM truss sanity', () => {
 describe('playable span bridge', () => {
   it('solves a simple triangular deck bridge on default grid', () => {
     const nodes = createGridNodes();
-    // Deck chord 0-5-10 + apex at (5,2) with diagonals — minimal stable
+    // Deck chord + upper node at MAX_HEIGHT (y=1) with diagonals
     const find = (x: number, y: number) => {
       const n = findNodeAt(nodes, x, y);
       if (!n) throw new Error(`missing ${x},${y}`);
       return n.id;
     };
+    const midX = Math.floor(SPAN / 2);
     const members: MemberDef[] = [
-      { id: 1, n1: find(0, 0), n2: find(5, 0) },
-      { id: 2, n1: find(5, 0), n2: find(10, 0) },
-      { id: 3, n1: find(0, 0), n2: find(5, 2) },
-      { id: 4, n1: find(10, 0), n2: find(5, 2) },
-      { id: 5, n1: find(5, 0), n2: find(5, 2) },
+      { id: 1, n1: find(0, 0), n2: find(midX, 0) },
+      { id: 2, n1: find(midX, 0), n2: find(SPAN, 0) },
+      { id: 3, n1: find(0, 0), n2: find(midX, 1) },
+      { id: 4, n1: find(SPAN, 0), n2: find(midX, 1) },
+      { id: 5, n1: find(midX, 0), n2: find(midX, 1) },
     ];
-    const mid = find(5, 0);
+    const mid = find(midX, 0);
     const loads = new Map<number, Vec2>([[mid, { x: 0, y: -20 }]]);
     const result = solveTruss(nodes, members, loads);
     expect(result.ok).toBe(true);
-    expect(result.singular).toBe(false);
+    expect(result.members.length).toBeGreaterThan(0);
     expect(result.maxUtilization).toBeGreaterThan(0);
   });
 });
@@ -127,17 +131,17 @@ describe('3D visual braces must not break 2D DSM', () => {
     const add = (x1: number, y1: number, x2: number, y2: number) => {
       members.push({ id: id++, n1: find(x1, y1), n2: find(x2, y2) });
     };
-    for (let x = 0; x < 10; x++) add(x, 0, x + 1, 0);
-    for (let x = 0; x < 10; x++) add(x, 2, x + 1, 2);
-    for (let x = 0; x <= 10; x++) add(x, 0, x, 2);
-    for (let x = 0; x < 10; x++) {
-      if (x % 2 === 0) add(x, 0, x + 1, 2);
-      else add(x, 2, x + 1, 0);
+    for (let x = 0; x < SPAN; x++) add(x, 0, x + 1, 0);
+    for (let x = 0; x < SPAN; x++) add(x, 1, x + 1, 1);
+    for (let x = 0; x <= SPAN; x++) add(x, 0, x, 1);
+    for (let x = 0; x < SPAN; x++) {
+      if (x % 2 === 0) add(x, 0, x + 1, 1);
+      else add(x, 1, x + 1, 0);
     }
-    const loads = new Map<number, Vec2>([[find(5, 0), { x: 0, y: -8 }]]);
+    const midX = Math.floor(SPAN / 2);
+    const loads = new Map<number, Vec2>([[find(midX, 0), { x: 0, y: -8 }]]);
     const result = solveTruss(nodes, members, loads);
     expect(result.ok).toBe(true);
-    expect(result.singular).toBe(false);
     expect(result.members.length).toBe(members.length);
     expect(result.maxUtilization).toBeGreaterThan(0);
   });
@@ -145,28 +149,25 @@ describe('3D visual braces must not break 2D DSM', () => {
   it('ignores visual-only / zero-length pollution (fake Z-braces)', () => {
     const nodes = createGridNodes();
     const find = (x: number, y: number) => findNodeAt(nodes, x, y)!.id;
-    // Minimal stable deck bridge (same topology as playable span test)
+    const midX = Math.floor(SPAN / 2);
     const good: MemberDef[] = [
-      { id: 1, n1: find(0, 0), n2: find(5, 0) },
-      { id: 2, n1: find(5, 0), n2: find(10, 0) },
-      { id: 3, n1: find(0, 0), n2: find(5, 2) },
-      { id: 4, n1: find(10, 0), n2: find(5, 2) },
-      { id: 5, n1: find(5, 0), n2: find(5, 2) },
+      { id: 1, n1: find(0, 0), n2: find(midX, 0) },
+      { id: 2, n1: find(midX, 0), n2: find(SPAN, 0) },
+      { id: 3, n1: find(0, 0), n2: find(midX, 1) },
+      { id: 4, n1: find(SPAN, 0), n2: find(midX, 1) },
+      { id: 5, n1: find(midX, 0), n2: find(midX, 1) },
     ];
-    // Simulate mistaken Near↔Far Z brace stored as XY member: self-loop,
-    // visualOnly flag, or both — must not enter active DOFs or force recovery
     const polluted: MemberDef[] = [
       ...good,
-      { id: 90, n1: find(5, 2), n2: find(5, 2), visualOnly: true },
+      { id: 90, n1: find(midX, 1), n2: find(midX, 1), visualOnly: true },
       { id: 91, n1: find(0, 0), n2: find(0, 0) },
-      { id: 92, n1: find(5, 0), n2: find(5, 0), visualOnly: true },
+      { id: 92, n1: find(midX, 0), n2: find(midX, 0), visualOnly: true },
     ];
-    const loads = new Map<number, Vec2>([[find(5, 0), { x: 0, y: -20 }]]);
+    const loads = new Map<number, Vec2>([[find(midX, 0), { x: 0, y: -20 }]]);
     const clean = solveTruss(nodes, good, loads);
     const dirty = solveTruss(nodes, polluted, loads);
     expect(clean.ok).toBe(true);
     expect(dirty.ok).toBe(true);
-    expect(dirty.singular).toBe(false);
     expect(dirty.members.find((m) => m.id === 90)).toBeUndefined();
     expect(dirty.members.find((m) => m.id === 91)).toBeUndefined();
     expect(dirty.members.find((m) => m.id === 92)).toBeUndefined();
@@ -174,7 +175,7 @@ describe('3D visual braces must not break 2D DSM', () => {
     expect(dirty.maxUtilization).toBeGreaterThan(0);
   });
 
-  it('rectangle ladder without diagonals stays singular (demo failure mode)', () => {
+  it('rectangle ladder without diagonals still yields stress colours (soft stabilize)', () => {
     const nodes = createGridNodes();
     const find = (x: number, y: number) => findNodeAt(nodes, x, y)!.id;
     const members: MemberDef[] = [];
@@ -182,11 +183,16 @@ describe('3D visual braces must not break 2D DSM', () => {
     const add = (x1: number, y1: number, x2: number, y2: number) => {
       members.push({ id: id++, n1: find(x1, y1), n2: find(x2, y2) });
     };
-    for (let x = 0; x < 10; x++) add(x, 0, x + 1, 0);
-    for (let x = 0; x < 10; x++) add(x, 2, x + 1, 2);
-    for (let x = 0; x <= 10; x++) add(x, 0, x, 2);
-    const loads = new Map<number, Vec2>([[find(5, 0), { x: 0, y: -8 }]]);
+    for (let x = 0; x < SPAN; x++) add(x, 0, x + 1, 0);
+    for (let x = 0; x < SPAN; x++) add(x, 1, x + 1, 1);
+    for (let x = 0; x <= SPAN; x++) add(x, 0, x, 1);
+    const midX = Math.floor(SPAN / 2);
+    const loads = new Map<number, Vec2>([[find(midX, 0), { x: 0, y: -8 }]]);
     const result = solveTruss(nodes, members, loads);
-    expect(result.singular || !result.ok).toBe(true);
+    // Must NOT dead-end: player sees coloured sticks
+    expect(result.ok).toBe(true);
+    expect(result.members.length).toBe(members.length);
+    expect(result.stabilized).toBe(true);
+    expect(result.criticalMemberId).not.toBeNull();
   });
 });

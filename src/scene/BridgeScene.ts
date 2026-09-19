@@ -13,6 +13,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   BASE_RAIL_TARGET,
+  DECK_POINTS,
   GRID,
   laneZ,
   MAX_HEIGHT,
@@ -50,6 +51,8 @@ export class BridgeScene {
   private buildPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
 
   private memberMeshes = new Map<number, THREE.Mesh[]>();
+  /** Smooth Lengkung tubes keyed by archGroupId (legs stay in members for DSM). */
+  private archMeshes = new Map<number, THREE.Mesh[]>();
   private nodeMeshes = new Map<number, THREE.Mesh[]>();
   private transverseMeshes = new Map<number, THREE.Mesh>();
   /** Advanced: duplicate side-truss to near/far + transverse braces. Default OFF. */
@@ -69,9 +72,9 @@ export class BridgeScene {
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.Fog(0x1a2332, 28, 55);
 
-    const lookAt = new THREE.Vector3(SPAN / 2, MAX_HEIGHT / 2 + 0.2, 0);
+    const lookAt = new THREE.Vector3(SPAN / 2, 0.35, 0);
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 200);
-    this.camera.position.set(SPAN / 2 + 6.5, MAX_HEIGHT + 4.5, 11);
+    this.camera.position.set(SPAN / 2 + 5.5, MAX_HEIGHT + 3.2, 12);
     this.camera.lookAt(lookAt);
 
     this.controls = new OrbitControls(this.camera, canvas);
@@ -189,77 +192,74 @@ export class BridgeScene {
     while (this.gridGroup.children.length) {
       const c = this.gridGroup.children[0]!;
       this.gridGroup.remove(c);
-      if (c instanceof THREE.LineSegments) {
-        c.geometry.dispose();
-        (c.material as THREE.Material).dispose();
+      if (c instanceof THREE.LineSegments || c instanceof THREE.Mesh) {
+        (c as THREE.Mesh).geometry?.dispose();
+        const mat = (c as THREE.Mesh).material;
+        if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
+        else (mat as THREE.Material)?.dispose();
       }
     }
 
-    const makePlaneGrid = (z: number, opacity: number) => {
-      const mat = new THREE.LineBasicMaterial({
-        color: 0x3a4a5c,
-        transparent: true,
-        opacity,
-      });
-      const pts: THREE.Vector3[] = [];
-      for (let x = 0; x <= SPAN; x++) {
-        pts.push(new THREE.Vector3(x * GRID, 0, z));
-        pts.push(new THREE.Vector3(x * GRID, MAX_HEIGHT * GRID, z));
-      }
-      for (let y = 0; y <= MAX_HEIGHT; y++) {
-        pts.push(new THREE.Vector3(0, y * GRID, z));
-        pts.push(new THREE.Vector3(SPAN * GRID, y * GRID, z));
-      }
-      const geo = new THREE.BufferGeometry().setFromPoints(pts);
-      this.gridGroup.add(new THREE.LineSegments(geo, mat));
-    };
-
-    makePlaneGrid(Z_NEAR, 0.45);
-    makePlaneGrid(Z_FAR, 0.32);
-
-    // Soft magnet dots on mid plane (lighter — freer placement)
-    const midPts: THREE.Vector3[] = [];
-    for (let x = 0; x <= SPAN; x++) {
-      for (let y = 0; y <= MAX_HEIGHT; y++) {
-        const s = 0.06;
-        midPts.push(new THREE.Vector3(x * GRID - s, y * GRID, 0));
-        midPts.push(new THREE.Vector3(x * GRID + s, y * GRID, 0));
-        midPts.push(new THREE.Vector3(x * GRID, y * GRID - s, 0));
-        midPts.push(new THREE.Vector3(x * GRID, y * GRID + s, 0));
-      }
-    }
-    this.gridGroup.add(
-      new THREE.LineSegments(
-        new THREE.BufferGeometry().setFromPoints(midPts),
-        new THREE.LineBasicMaterial({
-          color: 0x5a6a7c,
-          transparent: true,
-          opacity: 0.28,
-        }),
-      ),
-    );
-
-    // 7 deck lane guides (classroom parallel base rails)
-    const deckPts: THREE.Vector3[] = [];
+    // Flat tapak: 7 parallel deck lines × 12 points (no tall Y cage)
+    const laneMat = new THREE.LineBasicMaterial({
+      color: 0x81c784,
+      transparent: true,
+      opacity: 0.55,
+    });
+    const lanePts: THREE.Vector3[] = [];
     for (let lane = 0; lane < BASE_RAIL_TARGET; lane++) {
       const z = laneZ(lane);
-      deckPts.push(new THREE.Vector3(0, 0.01, z));
-      deckPts.push(new THREE.Vector3(SPAN * GRID, 0.01, z));
-    }
-    for (let x = 0; x <= SPAN; x += 2) {
-      deckPts.push(new THREE.Vector3(x * GRID, 0.01, Z_NEAR));
-      deckPts.push(new THREE.Vector3(x * GRID, 0.01, Z_FAR));
+      lanePts.push(new THREE.Vector3(0, 0.02, z));
+      lanePts.push(new THREE.Vector3(SPAN * GRID, 0.02, z));
     }
     this.gridGroup.add(
-      new THREE.LineSegments(
-        new THREE.BufferGeometry().setFromPoints(deckPts),
-        new THREE.LineBasicMaterial({
-          color: 0x81c784,
-          transparent: true,
-          opacity: 0.4,
-        }),
-      ),
+      new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(lanePts), laneMat),
     );
+
+    // Visible 12×7 deck magnets (pickable via XY snap to same x)
+    const magnetGeo = new THREE.SphereGeometry(0.085, 10, 10);
+    const magnetMat = new THREE.MeshStandardMaterial({
+      color: 0xc8e6c9,
+      emissive: 0x1b5e20,
+      emissiveIntensity: 0.15,
+      transparent: true,
+      opacity: 0.9,
+      roughness: 0.55,
+    });
+    for (let xi = 0; xi < DECK_POINTS; xi++) {
+      const x = xi * GRID;
+      for (let lane = 0; lane < BASE_RAIL_TARGET; lane++) {
+        const mesh = new THREE.Mesh(magnetGeo, magnetMat);
+        mesh.position.set(x, 0.04, laneZ(lane));
+        mesh.userData.deckMagnet = true;
+        mesh.userData.xIndex = xi;
+        mesh.userData.zLane = lane;
+        this.gridGroup.add(mesh);
+      }
+    }
+
+    // Subtle optional brace level (y=MAX_HEIGHT) — mid-plane only, not dominating
+    if (MAX_HEIGHT > 0) {
+      const upperPts: THREE.Vector3[] = [];
+      for (let xi = 0; xi < DECK_POINTS; xi++) {
+        const x = xi * GRID;
+        const s = 0.05;
+        upperPts.push(new THREE.Vector3(x - s, MAX_HEIGHT * GRID, 0));
+        upperPts.push(new THREE.Vector3(x + s, MAX_HEIGHT * GRID, 0));
+        upperPts.push(new THREE.Vector3(x, MAX_HEIGHT * GRID - s, 0));
+        upperPts.push(new THREE.Vector3(x, MAX_HEIGHT * GRID + s, 0));
+      }
+      this.gridGroup.add(
+        new THREE.LineSegments(
+          new THREE.BufferGeometry().setFromPoints(upperPts),
+          new THREE.LineBasicMaterial({
+            color: 0x5a6a7c,
+            transparent: true,
+            opacity: 0.22,
+          }),
+        ),
+      );
+    }
   }
 
   private buildAbutments(): void {
@@ -319,19 +319,21 @@ export class BridgeScene {
     this.nodeMeshes.clear();
 
     for (const n of nodes) {
+      // Apex is physics-only (Lengkung legs); visible stick is a smooth tube.
+      if (n.isApex) continue;
+      // Deck magnets (12×7) already drawn in buildGrid — skip duplicate deck spheres.
+      if (n.isDeck && !n.isFree && n.support === 'none') continue;
+
       let color = 0xb0bec5;
       if (n.support === 'pin') color = 0xffca28;
       else if (n.support === 'roller') color = 0x90caf9;
-      else if (n.isApex) color = 0xce93d8;
       else if (n.isFree) color = 0x80cbc4;
-      else if (n.isDeck) color = 0xcfd8dc;
 
       const meshes: THREE.Mesh[] = [];
-      const r = n.isApex ? NODE_RADIUS * 0.75 : n.isFree ? NODE_RADIUS * 0.85 : NODE_RADIUS;
+      const r = n.isFree ? NODE_RADIUS * 0.85 : NODE_RADIUS * 1.05;
 
-      // Default: single mid-plane joint. Advanced mirror: also show near/far faces.
       const zs =
-        this.autoMirrorDepth && (n.support !== 'none' || n.isFree || n.isApex)
+        this.autoMirrorDepth && (n.support !== 'none' || n.isFree)
           ? [0, Z_NEAR * 0.85, Z_FAR * 0.85]
           : [0];
 
@@ -340,7 +342,7 @@ export class BridgeScene {
         const mat = new THREE.MeshStandardMaterial({
           color,
           transparent: zs.length === 1,
-          opacity: zs.length === 1 ? 0.55 : 1,
+          opacity: zs.length === 1 ? 0.85 : 1,
         });
         const mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(n.x, n.y, z);
@@ -359,9 +361,120 @@ export class BridgeScene {
     results: MemberResult[] | null,
     highlightFailed = false,
   ): void {
-    const ids = new Set(members.map((m) => m.id));
+    const resultMap = new Map(results?.map((r) => [r.id, r]) ?? []);
+
+    // --- Lengkung: one smooth Bezier tube per arch group (hide sharp ∧ legs) ---
+    const archGroups = new Map<
+      number,
+      { legs: MemberDef[]; chord: [number, number]; zLane?: number; role?: string }
+    >();
+    for (const m of members) {
+      if (m.archGroupId == null || !m.archChord) continue;
+      let g = archGroups.get(m.archGroupId);
+      if (!g) {
+        g = { legs: [], chord: m.archChord, zLane: m.zLane, role: m.role };
+        archGroups.set(m.archGroupId, g);
+      }
+      g.legs.push(m);
+      if (m.zLane != null) g.zLane = m.zLane;
+      if (m.role) g.role = m.role;
+    }
+
+    const liveArch = new Set(archGroups.keys());
+    for (const [gid, meshes] of this.archMeshes) {
+      if (!liveArch.has(gid)) {
+        for (const mesh of meshes) {
+          this.memberGroup.remove(mesh);
+          mesh.geometry.dispose();
+          (mesh.material as THREE.Material).dispose();
+        }
+        this.archMeshes.delete(gid);
+      }
+    }
+
+    const archLegIds = new Set<number>();
+    for (const [gid, g] of archGroups) {
+      for (const leg of g.legs) archLegIds.add(leg.id);
+      const [c1, c2] = g.chord;
+      const a = findNodeById(nodes, c1);
+      const b = findNodeById(nodes, c2);
+      if (!a || !b) continue;
+      const endIds = new Set([c1, c2]);
+      const apexId = g.legs
+        .flatMap((l) => [l.n1, l.n2])
+        .find((id) => !endIds.has(id));
+      const apex = apexId != null ? findNodeById(nodes, apexId) : undefined;
+      if (!apex) continue;
+
+      // Quadratic Bezier through ends with apex as curve midpoint
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const ctrl = {
+        x: 2 * apex.x - mid.x,
+        y: 2 * apex.y - mid.y,
+      };
+
+      let color = g.role === 'base' ? 0xc8a882 : 0xa1887f;
+      // Colour by worst utilization of the two legs
+      for (const leg of g.legs) {
+        const rr = resultMap.get(leg.id);
+        if (rr) {
+          color = utilizationColor(rr.utilization);
+          if (highlightFailed && rr.failed) color = 0x7f0000;
+        }
+      }
+
+      const isBase = g.role === 'base' && g.zLane != null;
+      const zs = isBase
+        ? [laneZ(g.zLane!)]
+        : this.autoMirrorDepth
+          ? [Z_NEAR, Z_FAR]
+          : [0];
+      const radius = isBase ? BASE_RADIUS : MEMBER_RADIUS;
+
+      let meshes = this.archMeshes.get(gid);
+      const needRebuild =
+        !meshes ||
+        meshes.length !== zs.length ||
+        meshes.some((mesh) => mesh.userData.archKey !== `${apex.x.toFixed(3)},${apex.y.toFixed(3)}`);
+      if (needRebuild) {
+        if (meshes) {
+          for (const mesh of meshes) {
+            this.memberGroup.remove(mesh);
+            mesh.geometry.dispose();
+            (mesh.material as THREE.Material).dispose();
+          }
+        }
+        meshes = zs.map((z) => {
+          const curve = new THREE.QuadraticBezierCurve3(
+            new THREE.Vector3(a.x, a.y, z),
+            new THREE.Vector3(ctrl.x, ctrl.y, z),
+            new THREE.Vector3(b.x, b.y, z),
+          );
+          const geo = new THREE.TubeGeometry(curve, 24, radius, 8, false);
+          const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.65 });
+          const mesh = new THREE.Mesh(geo, mat);
+          mesh.userData.archGroupId = gid;
+          mesh.userData.archKey = `${apex.x.toFixed(3)},${apex.y.toFixed(3)}`;
+          mesh.userData.memberId = g.legs[0]!.id;
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          this.memberGroup.add(mesh);
+          return mesh;
+        });
+        this.archMeshes.set(gid, meshes);
+      } else {
+        for (const mesh of meshes!) {
+          (mesh.material as THREE.MeshStandardMaterial).color.setHex(color);
+        }
+      }
+    }
+
+    // --- Straight members (skip arch legs — already drawn as smooth tubes) ---
+    const straightIds = new Set(
+      members.filter((m) => m.archGroupId == null).map((m) => m.id),
+    );
     for (const [id, meshes] of this.memberMeshes) {
-      if (!ids.has(id)) {
+      if (!straightIds.has(id)) {
         for (const mesh of meshes) {
           this.memberGroup.remove(mesh);
           mesh.geometry.dispose();
@@ -371,9 +484,8 @@ export class BridgeScene {
       }
     }
 
-    const resultMap = new Map(results?.map((r) => [r.id, r]) ?? []);
-
     for (const m of members) {
+      if (m.archGroupId != null) continue;
       const a = findNodeById(nodes, m.n1)!;
       const b = findNodeById(nodes, m.n2)!;
       const L = memberLength(nodes, m);
@@ -389,7 +501,6 @@ export class BridgeScene {
       }
 
       const isBase = m.role === 'base' && m.zLane != null;
-      // Base: its Z lane only. Normal: mid-plane unless advanced auto-mirror.
       const zs = isBase
         ? [laneZ(m.zLane!)]
         : this.autoMirrorDepth
@@ -430,6 +541,7 @@ export class BridgeScene {
       }
     }
 
+    void archLegIds;
     this.syncTransverse(nodes, members);
   }
 

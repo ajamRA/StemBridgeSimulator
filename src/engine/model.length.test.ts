@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SPAN } from './constants';
+import { BASE_RAIL_TARGET, DECK_POINTS, SPAN } from './constants';
 import {
   addArchMember,
   addBaseRail,
@@ -29,7 +29,7 @@ describe('isAllowedMember (freer angles / lengths)', () => {
     const [c, d] = ids(0, 0, SPAN, 0);
     expect(isAllowedMember(nodes, c, d)).toBe(true);
 
-    const [e, f] = ids(0, 0, 5, 2);
+    const [e, f] = ids(0, 0, 5, 1);
     expect(isAllowedMember(nodes, e, f)).toBe(true);
   });
 
@@ -137,5 +137,20 @@ describe('addArchMember (Lengkung)', () => {
     expect(apexes[0]!.x).toBeCloseTo(1.5, 5);
     expect(members.every((m) => m.shape === 'lengkung')).toBe(true);
     expect(members[0]!.archGroupId).toBe(members[1]!.archGroupId);
+  });
+});
+
+
+describe('deck tapak 12×7', () => {
+  it('createGridNodes has 12 deck x-points (0..SPAN) and SPAN = DECK_POINTS-1', () => {
+    expect(DECK_POINTS).toBe(12);
+    expect(SPAN).toBe(11);
+    expect(BASE_RAIL_TARGET).toBe(7);
+    const nodes = createGridNodes();
+    const deck = nodes.filter((n) => n.isDeck && !n.isFree);
+    const xs = [...new Set(deck.map((n) => n.x))].sort((a, b) => a - b);
+    expect(xs).toHaveLength(DECK_POINTS);
+    expect(xs[0]).toBe(0);
+    expect(xs[xs.length - 1]).toBe(SPAN);
   });
 });

@@ -1,11 +1,20 @@
 /** Grid spacing in world units */
 export const GRID = 1;
 
-/** Bridge span in grid units (left support x=0, right support x=SPAN) */
-export const SPAN = 10;
+/**
+ * Deck tapak: 12 snap points along the span (indices 0 .. DECK_POINTS-1).
+ * Right abutment sits at x = SPAN = DECK_POINTS - 1.
+ */
+export const DECK_POINTS = 12;
 
-/** Number of vertical grid levels above deck (deck is y=0) */
-export const MAX_HEIGHT = 3;
+/** Bridge span in grid units (left support x=0, right support x=SPAN) */
+export const SPAN = DECK_POINTS - 1; // 11 → points 0..11 = 12
+
+/**
+ * Optional truss height above deck (deck y=0).
+ * Keep minimal — visible magnets are the flat 12×7 deck, not a tall Y grid.
+ */
+export const MAX_HEIGHT = 1;
 
 /**
  * Soft length bands for classroom stick presets (world units).
@@ -45,7 +54,7 @@ export const SINGULARITY_EPS = 1e-10;
  */
 export const TRUSS_HALF_DEPTH = 1.05;
 
-/** Classroom challenge: ~7 parallel long sticks as the deck base. */
+/** Classroom challenge: 7 parallel long sticks as the deck base (7 Z lines). */
 export const BASE_RAIL_TARGET = 7;
 
 /** Soft snap radius when placing free nodes (world units). */
