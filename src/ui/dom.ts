@@ -1,4 +1,5 @@
-import type { StickLengthPreset } from '../engine/model';
+import { BASE_RAIL_TARGET } from '../engine/constants';
+import type { StickLengthPreset } from '../engine/types';
 import type { StickShape } from '../engine/types';
 
 export interface UIHandles {
@@ -9,6 +10,8 @@ export interface UIHandles {
   btnPadam: HTMLButtonElement;
   btnUndo: HTMLButtonElement;
   btnReset: HTMLButtonElement;
+  btnBase: HTMLButtonElement;
+  baseCounter: HTMLElement;
   loadSlider: HTMLInputElement;
   loadVal: HTMLElement;
   resultPanel: HTMLElement;
@@ -26,17 +29,19 @@ export function mountUI(app: HTMLElement): UIHandles {
         <button type="button" id="btn-padam" title="Padam ahli">Padam</button>
         <button type="button" id="btn-undo" title="Undo">Undo</button>
         <button type="button" id="btn-reset" class="danger" title="Reset">Reset</button>
+        <button type="button" id="btn-base" class="accent" title="Tambah 1 lidi panjang merentangi span pada lorong seterusnya">+ Base (lidi panjang)</button>
       </div>
       <div class="load-control">
+        <span class="base-counter" id="base-counter" title="Sasaran cabaran bilik darjah">Base panjang: 0/${BASE_RAIL_TARGET}</span>
         <label for="beban">Beban</label>
         <input type="range" id="beban" min="1" max="80" value="20" />
         <span class="val" id="beban-val">20</span>
         <div class="length-picker" role="group" aria-label="Panjang lidi">
           <span class="length-label">Lidi:</span>
-          <button type="button" id="len-1" data-length="1" title="1 unit — sokongan / bracing">Pendek</button>
-          <button type="button" id="len-2" data-length="2" title="2 unit">Sederhana</button>
-          <button type="button" id="len-3" data-length="3" class="active" title="3 unit — base / chords">Panjang</button>
-          <button type="button" id="len-auto" data-length="auto" title="Sebarang 1–3 / pepenjuru">Auto</button>
+          <button type="button" id="len-1" data-length="1" title="Pendek — bracing / menegak">Pendek</button>
+          <button type="button" id="len-2" data-length="2" title="Sederhana">Sederhana</button>
+          <button type="button" id="len-panjang" data-length="panjang" class="active" title="Panjang — chord sehingga rentang penuh">Panjang</button>
+          <button type="button" id="len-auto" data-length="auto" title="Sebarang panjang antara nod">Auto</button>
         </div>
         <div class="shape-picker" role="group" aria-label="Bentuk lidi">
           <span class="length-label">Bentuk:</span>
@@ -47,8 +52,8 @@ export function mountUI(app: HTMLElement): UIHandles {
     </header>
     <canvas id="game-canvas"></canvas>
     <aside class="result-panel" id="result-panel">
-      <div class="tip">Tip: Base: pilih Panjang. Sokongan: pilih Pendek. Lengkung sesuai untuk busur/arch di bahagian atas atau geladak.</div>
-      <div class="status">Mod: <strong>Bina</strong> — klik dua nod (auto-cermin 3D). Seret kiri = orbit kamera.</div>
+      <div class="tip">Susun 7 lidi panjang sebagai base, kemudian brace dengan pendek.</div>
+      <div class="status">Mod: <strong>Bina</strong> — klik kosong = nod baharu (soft snap); klik dua nod = sambung. Atau tekan <strong>+ Base</strong>.</div>
       <div class="legend">
         <span><i style="background:#43a047"></i>Rendah</span>
         <span><i style="background:#fdd835"></i>Sederhana</span>
@@ -67,6 +72,8 @@ export function mountUI(app: HTMLElement): UIHandles {
     btnPadam: app.querySelector('#btn-padam')!,
     btnUndo: app.querySelector('#btn-undo')!,
     btnReset: app.querySelector('#btn-reset')!,
+    btnBase: app.querySelector('#btn-base')!,
+    baseCounter: app.querySelector('#base-counter')!,
     loadSlider: app.querySelector('#beban')!,
     loadVal: app.querySelector('#beban-val')!,
     resultPanel: app.querySelector('#result-panel')!,
@@ -84,7 +91,12 @@ export function setActiveMode(ui: UIHandles, mode: 'bina' | 'uji' | 'padam'): vo
 export function setActiveLength(ui: UIHandles, length: StickLengthPreset): void {
   for (const btn of ui.lengthButtons) {
     const v = btn.dataset.length;
-    const active = length === 'auto' ? v === 'auto' : v === String(length);
+    const active =
+      length === 'auto'
+        ? v === 'auto'
+        : length === 'panjang'
+          ? v === 'panjang'
+          : v === String(length);
     btn.classList.toggle('active', active);
   }
 }
@@ -93,6 +105,12 @@ export function setActiveShape(ui: UIHandles, shape: StickShape): void {
   for (const btn of ui.shapeButtons) {
     btn.classList.toggle('active', btn.dataset.shape === shape);
   }
+}
+
+export function setBaseCounter(ui: UIHandles, count: number): void {
+  ui.baseCounter.textContent = `Base panjang: ${count}/${BASE_RAIL_TARGET}`;
+  ui.baseCounter.classList.toggle('done', count >= BASE_RAIL_TARGET);
+  ui.btnBase.disabled = count >= BASE_RAIL_TARGET;
 }
 
 export function renderResultPanel(

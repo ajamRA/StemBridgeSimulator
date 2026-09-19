@@ -1,10 +1,28 @@
-import { SPAN, MAX_HEIGHT, ALLOWED_LENGTHS, GRID } from './constants';
-import type { MemberDef, NodeDef, SupportType, Vec2 } from './types';
+import {
+  BASE_RAIL_TARGET,
+  GRID,
+  LENGTH_MAX,
+  LENGTH_MIN,
+  LENGTH_PENDEK_MAX,
+  LENGTH_SEDERHANA_MAX,
+  MAX_HEIGHT,
+  SOFT_SNAP,
+  SPAN,
+} from './constants';
+import type {
+  MemberDef,
+  NodeDef,
+  StickLengthPreset,
+  SupportType,
+  Vec2,
+} from './types';
 
 let nextMemberId = 1;
 const APEX_ID_START = 1000;
 let nextApexNodeId = APEX_ID_START;
 let nextArchGroupId = 1;
+const FREE_ID_START = 500;
+let nextFreeNodeId = FREE_ID_START;
 
 export function createGridNodes(): NodeDef[] {
   const nodes: NodeDef[] = [];
@@ -31,7 +49,7 @@ export function nodeKey(x: number, y: number): string {
 }
 
 export function findNodeAt(nodes: NodeDef[], x: number, y: number): NodeDef | undefined {
-  return nodes.find((n) => n.x === x && n.y === y);
+  return nodes.find((n) => Math.abs(n.x - x) < 1e-9 && Math.abs(n.y - y) < 1e-9);
 }
 
 export function findNodeById(nodes: NodeDef[], id: number): NodeDef | undefined {
@@ -41,7 +59,7 @@ export function findNodeById(nodes: NodeDef[], id: number): NodeDef | undefined 
 /** Mid-span deck node (default load point) */
 export function defaultLoadNodeId(nodes: NodeDef[]): number {
   const midX = (SPAN * GRID) / 2;
-  const n = nodes.find((nd) => nd.isDeck && nd.x === midX);
+  const n = nodes.find((nd) => nd.isDeck && Math.abs(nd.x - midX) < 1e-9 && !nd.isFree);
   return n?.id ?? nodes.find((nd) => nd.isDeck)?.id ?? 0;
 }
 
@@ -60,52 +78,104 @@ export function memberDirection(nodes: NodeDef[], m: MemberDef): Vec2 {
 }
 
 /**
- * Allowed if both ends on grid and length is 1–3 axis-aligned,
- * or a diagonal with both Δx,Δy integers in 1..3 and hypotenuse matching grid.
+ * Freer classroom rule: any chord between two distinct nodes whose length is
+ * in [LENGTH_MIN, LENGTH_MAX]. Angles are unrestricted (odd diagonals OK).
+ * Soft snap happens at placement time — here we only check geometry.
  */
 export function isAllowedMember(nodes: NodeDef[], n1: number, n2: number): boolean {
   if (n1 === n2) return false;
   const a = findNodeById(nodes, n1);
   const b = findNodeById(nodes, n2);
   if (!a || !b) return false;
-  const dx = Math.abs(b.x - a.x);
-  const dy = Math.abs(b.y - a.y);
-  const L = Math.hypot(dx, dy);
-  if (L < 1e-9) return false;
-
-  // Axis-aligned: length in ALLOWED_LENGTHS
-  if (dx === 0 || dy === 0) {
-    return (ALLOWED_LENGTHS as readonly number[]).includes(L);
-  }
-
-  // Diagonal: both ends on integer grid, each leg 1..3
-  const gx = dx / GRID;
-  const gy = dy / GRID;
-  if (!Number.isInteger(gx) || !Number.isInteger(gy)) return false;
-  if (gx < 1 || gx > 3 || gy < 1 || gy > 3) return false;
-  return true;
+  const L = Math.hypot(b.x - a.x, b.y - a.y);
+  return L >= LENGTH_MIN - 1e-9 && L <= LENGTH_MAX + 1e-9;
 }
 
 export function membersEqual(a: MemberDef, b: MemberDef): boolean {
   return (a.n1 === b.n1 && a.n2 === b.n2) || (a.n1 === b.n2 && a.n2 === b.n1);
 }
 
+/**
+ * Structural duplicate check (same endpoints). Parallel base rails that share
+ * endpoints but differ by zLane are allowed via {@link hasBaseLane}.
+ */
 export function hasMember(members: MemberDef[], n1: number, n2: number): boolean {
   return members.some(
-    (m) => (m.n1 === n1 && m.n2 === n2) || (m.n1 === n2 && m.n2 === n1),
+    (m) =>
+      m.role !== 'base' &&
+      ((m.n1 === n1 && m.n2 === n2) || (m.n1 === n2 && m.n2 === n1)),
   );
+}
+
+export function hasBaseLane(members: MemberDef[], lane: number): boolean {
+  return members.some((m) => m.role === 'base' && m.zLane === lane);
+}
+
+export function countBaseRails(members: MemberDef[]): number {
+  return members.filter((m) => m.role === 'base').length;
+}
+
+/** Next free deck lane index, or null if all BASE_RAIL_TARGET lanes are filled. */
+export function nextFreeBaseLane(members: MemberDef[]): number | null {
+  for (let i = 0; i < BASE_RAIL_TARGET; i++) {
+    if (!hasBaseLane(members, i)) return i;
+  }
+  return null;
 }
 
 export function addMember(
   members: MemberDef[],
   n1: number,
   n2: number,
-  extra?: Partial<Pick<MemberDef, 'shape' | 'archGroupId' | 'archChord' | 'visualOnly'>>,
+  extra?: Partial<
+    Pick<MemberDef, 'shape' | 'archGroupId' | 'archChord' | 'visualOnly' | 'role' | 'zLane'>
+  >,
 ): MemberDef | null {
-  if (hasMember(members, n1, n2)) return null;
+  if (extra?.role === 'base') {
+    if (extra.zLane == null) return null;
+    if (hasBaseLane(members, extra.zLane)) return null;
+  } else if (hasMember(members, n1, n2)) {
+    return null;
+  }
   const m: MemberDef = { id: nextMemberId++, n1, n2, ...extra };
   members.push(m);
   return m;
+}
+
+/**
+ * Drop one full-span base rail (lidi panjang) in the next free Z lane.
+ * Left abutment deck node → right abutment deck node.
+ *
+ * Physics: only the first base rail enters the 2D DSM; extra lanes are
+ * visualOnly (same XY would otherwise over-stiffen / duplicate the chord).
+ * Documented in README — multi-rail deck physics is approximate.
+ */
+export function addBaseRail(
+  nodes: NodeDef[],
+  members: MemberDef[],
+): { member: MemberDef; lane: number } | null {
+  const lane = nextFreeBaseLane(members);
+  if (lane == null) return null;
+
+  const left = nodes.find((n) => n.isDeck && n.support === 'pin' && !n.isFree && !n.isApex);
+  const right = nodes.find((n) => n.isDeck && n.support === 'roller' && !n.isFree && !n.isApex);
+  if (!left || !right) return null;
+
+  const alreadyStructural = members.some(
+    (m) =>
+      m.role === 'base' &&
+      !m.visualOnly &&
+      ((m.n1 === left.id && m.n2 === right.id) || (m.n1 === right.id && m.n2 === left.id)),
+  );
+
+  const m = addMember(members, left.id, right.id, {
+    shape: 'lurus',
+    role: 'base',
+    zLane: lane,
+    visualOnly: alreadyStructural, // first rail structural; rest visual parallel
+  });
+  if (!m) return null;
+  return { member: m, lane };
 }
 
 export function removeMemberById(members: MemberDef[], id: number): MemberDef | null {
@@ -157,6 +227,7 @@ export function resetMemberIds(): void {
   nextMemberId = 1;
   nextApexNodeId = APEX_ID_START;
   nextArchGroupId = 1;
+  nextFreeNodeId = FREE_ID_START;
 }
 
 export function cloneMembers(members: MemberDef[]): MemberDef[] {
@@ -167,11 +238,11 @@ export function cloneMembers(members: MemberDef[]): MemberDef[] {
  * Members that may enter the 2D axial DSM.
  *
  * Drops:
- * - visualOnly bars (must stay out of the planar truss)
- * - self-loops / zero XY length (e.g. a Near↔Far Z brace wrongly stored as an
- *   XY member between coincident nodes — those make K singular / NaN)
+ * - visualOnly bars (extra parallel base rails, etc.)
+ * - self-loops / zero XY length
  *
- * Near/far auto-mirror and transverse deck braces belong in BridgeScene only.
+ * Multi-rail deck: only the first (structural) base chord is solved; extra
+ * lanes are visual. Side truss braces / free nodes still contribute fully.
  */
 export function membersForSolver(nodes: NodeDef[], members: MemberDef[]): MemberDef[] {
   return members.filter((m) => {
@@ -184,15 +255,13 @@ export function membersForSolver(nodes: NodeDef[], members: MemberDef[]): Member
   });
 }
 
-/** Stick length preset: fixed 1–3 grid units, or auto (any allowed). */
-export type StickLengthPreset = 1 | 2 | 3 | 'auto';
-
 /**
  * Classroom length filter on top of {@link isAllowedMember}.
  *
- * - Ortho: grid span must equal selected L (e.g. Pendek → only 1-unit bars).
- * - Diagonal: max(|Δx|,|Δy|) in grid units must equal L (legs already 1..3 via isAllowedMember).
- * - Auto: any currently allowed member.
+ * - Pendek (1): short braces / verticals — L ≤ ~1.75
+ * - Sederhana (2): medium — L ≤ ~3.6
+ * - Panjang: long chords up to full SPAN (one placement across the gap)
+ * - Auto: any length in [LENGTH_MIN, LENGTH_MAX]
  */
 export function isAllowedMemberForLength(
   nodes: NodeDef[],
@@ -206,19 +275,88 @@ export function isAllowedMemberForLength(
   const a = findNodeById(nodes, n1);
   const b = findNodeById(nodes, n2);
   if (!a || !b) return false;
+  const L = Math.hypot(b.x - a.x, b.y - a.y);
 
-  const gx = Math.abs(b.x - a.x) / GRID;
-  const gy = Math.abs(b.y - a.y) / GRID;
-
-  // Axis-aligned: exact length L
-  if (gx === 0 || gy === 0) {
-    return Math.max(gx, gy) === selectedL;
-  }
-
-  // Diagonal: longer leg equals selected L (e.g. L=2 → 2×1, 2×2; not 1×1)
-  return Math.max(gx, gy) === selectedL;
+  if (selectedL === 1) return L <= LENGTH_PENDEK_MAX + 1e-9;
+  if (selectedL === 2) return L <= LENGTH_SEDERHANA_MAX + 1e-9;
+  // panjang
+  return L >= LENGTH_PENDEK_MAX - 0.25 && L <= LENGTH_MAX + 1e-9;
 }
 
+/** Soft-snap a world point onto the integer grid (light magnet). */
+export function softSnapToGrid(x: number, y: number, radius = SOFT_SNAP): Vec2 {
+  const gx = Math.round(x / GRID) * GRID;
+  const gy = Math.round(y / GRID) * GRID;
+  const clampedY = Math.max(0, Math.min(MAX_HEIGHT * GRID, gy));
+  const clampedX = Math.max(0, Math.min(SPAN * GRID, gx));
+  if (Math.hypot(x - clampedX, y - clampedY) <= radius) {
+    return { x: clampedX, y: clampedY };
+  }
+  // No hard snap — still clamp into build volume softly
+  return {
+    x: Math.max(0, Math.min(SPAN * GRID, x)),
+    y: Math.max(0, Math.min(MAX_HEIGHT * GRID, y)),
+  };
+}
+
+/**
+ * Find an existing pickable node near world, or create a free joint
+ * (soft-snapped). Supports + apexes are never duplicated.
+ */
+export function findOrCreateNodeNear(
+  gridNodes: NodeDef[],
+  freeNodes: NodeDef[],
+  apexNodes: NodeDef[],
+  world: Vec2,
+  pickRadius = SOFT_SNAP * 1.4,
+): { node: NodeDef; created: boolean } {
+  const all = [...gridNodes, ...freeNodes];
+  let best: NodeDef | null = null;
+  let bestD = pickRadius;
+  for (const n of all) {
+    if (n.isApex) continue;
+    const d = Math.hypot(n.x - world.x, n.y - world.y);
+    if (d < bestD) {
+      bestD = d;
+      best = n;
+    }
+  }
+  if (best) return { node: best, created: false };
+
+  const snapped = softSnapToGrid(world.x, world.y);
+  // Prefer merging onto grid if soft-snap landed on an existing grid node
+  const onGrid = findNodeAt(gridNodes, snapped.x, snapped.y);
+  if (onGrid && !onGrid.isApex) return { node: onGrid, created: false };
+  const onFree = freeNodes.find(
+    (n) => Math.abs(n.x - snapped.x) < 1e-6 && Math.abs(n.y - snapped.y) < 1e-6,
+  );
+  if (onFree) return { node: onFree, created: false };
+
+  const node: NodeDef = {
+    id: nextFreeNodeId++,
+    x: snapped.x,
+    y: snapped.y,
+    support: 'none',
+    isDeck: Math.abs(snapped.y) < 1e-6,
+    isFree: true,
+  };
+  freeNodes.push(node);
+  void apexNodes; // apexes stay separate
+  return { node, created: true };
+}
+
+/** Remove free nodes that no longer participate in any member. */
+export function pruneOrphanFreeNodes(members: MemberDef[], freeNodes: NodeDef[]): void {
+  const used = new Set<number>();
+  for (const m of members) {
+    used.add(m.n1);
+    used.add(m.n2);
+  }
+  for (let i = freeNodes.length - 1; i >= 0; i--) {
+    const n = freeNodes[i]!;
+    if (!used.has(n.id)) freeNodes.splice(i, 1);
+  }
+}
 
 /** Chord already has a Lengkung arch between these endpoints. */
 export function hasArchBetween(members: MemberDef[], n1: number, n2: number): boolean {
@@ -248,7 +386,6 @@ export function archApexPosition(a: NodeDef, b: NodeDef): Vec2 {
     px = -px;
     py = -py;
   }
-  // Nearly horizontal chord → pure +Y rise (clearest classroom arch)
   if (Math.abs(dy) < 1e-9 || py < 0.25) {
     return { x: mx, y: my + rise };
   }
@@ -306,7 +443,6 @@ export function addArchMember(
     archChord: chord,
   });
   if (!leg1 || !leg2) {
-    // rollback
     if (leg1) removeMemberById(members, leg1.id);
     if (leg2) removeMemberById(members, leg2.id);
     const i = apexNodes.findIndex((n) => n.id === apex.id);
@@ -337,7 +473,19 @@ export function removeMemberOrArch(
     if (m) removed.push(m);
   }
   pruneOrphanApexes(members, apexNodes);
+  promoteBaseRails(members);
   return removed;
+}
+
+
+/** Ensure at least one base rail is structural if any remain (for DSM). */
+export function promoteBaseRails(members: MemberDef[]): void {
+  const bases = members.filter((m) => m.role === 'base');
+  if (!bases.length) return;
+  if (bases.some((m) => !m.visualOnly)) return;
+  // Promote the lowest lane to structural
+  bases.sort((a, b) => (a.zLane ?? 0) - (b.zLane ?? 0));
+  bases[0]!.visualOnly = false;
 }
 
 export function pruneOrphanApexes(members: MemberDef[], apexNodes: NodeDef[]): void {
@@ -356,11 +504,17 @@ export function cloneApexNodes(apexes: NodeDef[]): NodeDef[] {
   return apexes.map((n) => ({ ...n }));
 }
 
-export function allNodes(grid: NodeDef[], apexes: NodeDef[]): NodeDef[] {
-  return apexes.length ? [...grid, ...apexes] : grid;
+export function cloneFreeNodes(free: NodeDef[]): NodeDef[] {
+  return free.map((n) => ({ ...n }));
+}
+
+export function allNodes(grid: NodeDef[], apexes: NodeDef[], free: NodeDef[] = []): NodeDef[] {
+  return [...grid, ...free, ...apexes];
 }
 
 /** Pickable build nodes only (exclude Lengkung apexes). */
 export function pickableNodes(nodes: NodeDef[]): NodeDef[] {
   return nodes.filter((n) => !n.isApex);
 }
+
+export type { StickLengthPreset };

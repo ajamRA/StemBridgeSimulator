@@ -2,20 +2,28 @@
  * True 3D Three.js bridge view (PerspectiveCamera + OrbitControls).
  *
  * PHYSICS NOTE (MVP): Direct Stiffness Method remains 2D axial-only on the
- * primary XY truss. Near/far Z planes are visual auto-mirrors of the same
- * members so students see a stick bridge in depth without 3D node picking.
- * Stress colours / Test / progressive failure still come from that 2D solve.
+ * primary XY truss. Deck base rails use Z lanes (up to 7 parallel lidi panjang);
+ * only the first structural base chord enters the DSM — extra lanes are visual.
+ * Side-truss members still auto-mirror to near/far planes for classroom depth.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { GRID, MAX_HEIGHT, SPAN, TRUSS_HALF_DEPTH } from '../engine/constants';
+import {
+  BASE_RAIL_TARGET,
+  GRID,
+  laneZ,
+  MAX_HEIGHT,
+  SPAN,
+  TRUSS_HALF_DEPTH,
+} from '../engine/constants';
 import { findNodeById, memberLength } from '../engine/model';
 import { utilizationColor } from '../engine/solver';
 import type { MemberDef, MemberResult, NodeDef, Vec2 } from '../engine/types';
 
-const MEMBER_RADIUS = 0.06;
-const TRANSVERSE_RADIUS = 0.045;
-const NODE_RADIUS = 0.1;
+const MEMBER_RADIUS = 0.055;
+const BASE_RADIUS = 0.048;
+const TRANSVERSE_RADIUS = 0.04;
+const NODE_RADIUS = 0.09;
 const Z_NEAR = TRUSS_HALF_DEPTH;
 const Z_FAR = -TRUSS_HALF_DEPTH;
 
@@ -35,11 +43,11 @@ export class BridgeScene {
   private groundMesh: THREE.Mesh | null = null;
   private raycaster = new THREE.Raycaster();
   private pointer = new THREE.Vector2();
-  /** Mid build plane (z=0) — picking projects to XY; sticks auto-mirror to ±Z. */
+  /** Mid build plane (z=0) — picking projects to XY. */
   private buildPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
 
-  private memberMeshes = new Map<number, { near: THREE.Mesh; far: THREE.Mesh }>();
-  private nodeMeshes = new Map<number, { near: THREE.Mesh; far: THREE.Mesh }>();
+  private memberMeshes = new Map<number, THREE.Mesh[]>();
+  private nodeMeshes = new Map<number, THREE.Mesh[]>();
   private transverseMeshes = new Map<number, THREE.Mesh>();
 
   constructor(canvas: HTMLCanvasElement) {
@@ -58,7 +66,6 @@ export class BridgeScene {
 
     const lookAt = new THREE.Vector3(SPAN / 2, MAX_HEIGHT / 2 + 0.2, 0);
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 200);
-    // Default framing: slightly elevated 3/4 view so depth is obvious
     this.camera.position.set(SPAN / 2 + 6.5, MAX_HEIGHT + 4.5, 11);
     this.camera.lookAt(lookAt);
 
@@ -121,7 +128,6 @@ export class BridgeScene {
     this.buildAbutments();
   }
 
-  /** Temporarily lock orbit while the user is placing / deleting members. */
   setOrbitEnabled(enabled: boolean): void {
     this.controls.enabled = enabled;
   }
@@ -132,15 +138,14 @@ export class BridgeScene {
       roughness: 0.9,
       metalness: 0.05,
     });
-    const ground = new THREE.Mesh(new THREE.BoxGeometry(SPAN + 6, 0.25, 6), mat);
+    const ground = new THREE.Mesh(new THREE.BoxGeometry(SPAN + 6, 0.25, 7), mat);
     ground.position.set(SPAN / 2, -0.55, 0);
     ground.receiveShadow = true;
     this.root.add(ground);
     this.groundMesh = ground;
 
-    // Soft river / gap under the span
     const water = new THREE.Mesh(
-      new THREE.BoxGeometry(SPAN - 1.2, 0.08, 3.2),
+      new THREE.BoxGeometry(SPAN - 1.2, 0.08, 3.6),
       new THREE.MeshStandardMaterial({
         color: 0x1565c0,
         roughness: 0.35,
@@ -182,28 +187,49 @@ export class BridgeScene {
       this.gridGroup.add(new THREE.LineSegments(geo, mat));
     };
 
-    makePlaneGrid(Z_NEAR, 0.55);
-    makePlaneGrid(Z_FAR, 0.4);
+    makePlaneGrid(Z_NEAR, 0.45);
+    makePlaneGrid(Z_FAR, 0.32);
 
-    // Deck snap strip between planes (helps read depth)
-    const deckPts: THREE.Vector3[] = [];
+    // Soft magnet dots on mid plane (lighter — freer placement)
+    const midPts: THREE.Vector3[] = [];
     for (let x = 0; x <= SPAN; x++) {
-      deckPts.push(new THREE.Vector3(x * GRID, 0, Z_NEAR));
-      deckPts.push(new THREE.Vector3(x * GRID, 0, Z_FAR));
+      for (let y = 0; y <= MAX_HEIGHT; y++) {
+        const s = 0.06;
+        midPts.push(new THREE.Vector3(x * GRID - s, y * GRID, 0));
+        midPts.push(new THREE.Vector3(x * GRID + s, y * GRID, 0));
+        midPts.push(new THREE.Vector3(x * GRID, y * GRID - s, 0));
+        midPts.push(new THREE.Vector3(x * GRID, y * GRID + s, 0));
+      }
     }
-    for (let i = 0; i <= 4; i++) {
-      const t = i / 4;
-      const z = Z_NEAR + (Z_FAR - Z_NEAR) * t;
-      deckPts.push(new THREE.Vector3(0, 0, z));
-      deckPts.push(new THREE.Vector3(SPAN * GRID, 0, z));
+    this.gridGroup.add(
+      new THREE.LineSegments(
+        new THREE.BufferGeometry().setFromPoints(midPts),
+        new THREE.LineBasicMaterial({
+          color: 0x5a6a7c,
+          transparent: true,
+          opacity: 0.28,
+        }),
+      ),
+    );
+
+    // 7 deck lane guides (classroom parallel base rails)
+    const deckPts: THREE.Vector3[] = [];
+    for (let lane = 0; lane < BASE_RAIL_TARGET; lane++) {
+      const z = laneZ(lane);
+      deckPts.push(new THREE.Vector3(0, 0.01, z));
+      deckPts.push(new THREE.Vector3(SPAN * GRID, 0.01, z));
+    }
+    for (let x = 0; x <= SPAN; x += 2) {
+      deckPts.push(new THREE.Vector3(x * GRID, 0.01, Z_NEAR));
+      deckPts.push(new THREE.Vector3(x * GRID, 0.01, Z_FAR));
     }
     this.gridGroup.add(
       new THREE.LineSegments(
         new THREE.BufferGeometry().setFromPoints(deckPts),
         new THREE.LineBasicMaterial({
-          color: 0x5a6a7c,
+          color: 0x81c784,
           transparent: true,
-          opacity: 0.35,
+          opacity: 0.4,
         }),
       ),
     );
@@ -215,7 +241,7 @@ export class BridgeScene {
       this.abutmentGroup.remove(c);
     }
 
-    const depth = TRUSS_HALF_DEPTH * 2 + 0.6;
+    const depth = TRUSS_HALF_DEPTH * 2 + 0.7;
     const mat = new THREE.MeshStandardMaterial({
       color: 0x6d4c41,
       roughness: 0.85,
@@ -232,7 +258,6 @@ export class BridgeScene {
     right.receiveShadow = true;
     this.abutmentGroup.add(left, right);
 
-    // Pin markers on both faces
     const pinMat = new THREE.MeshStandardMaterial({ color: 0xffca28 });
     for (const z of [Z_NEAR, Z_FAR]) {
       const pin = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.26, 3), pinMat);
@@ -242,7 +267,6 @@ export class BridgeScene {
       this.abutmentGroup.add(pin);
     }
 
-    // Roller markers on both faces
     const rollerMat = new THREE.MeshStandardMaterial({ color: 0x90caf9 });
     for (const z of [Z_NEAR, Z_FAR]) {
       for (const ox of [-0.12, 0.12]) {
@@ -272,21 +296,33 @@ export class BridgeScene {
       if (n.support === 'pin') color = 0xffca28;
       else if (n.support === 'roller') color = 0x90caf9;
       else if (n.isApex) color = 0xce93d8;
+      else if (n.isFree) color = 0x80cbc4;
       else if (n.isDeck) color = 0xcfd8dc;
 
-      const make = (z: number) => {
-        const r = n.isApex ? NODE_RADIUS * 0.75 : NODE_RADIUS;
+      const meshes: THREE.Mesh[] = [];
+      const r = n.isApex ? NODE_RADIUS * 0.75 : n.isFree ? NODE_RADIUS * 0.85 : NODE_RADIUS;
+
+      // Supports + free joints: show on mid + both faces; grid magnets lighter on mid
+      const zs =
+        n.support !== 'none' || n.isFree || n.isApex
+          ? [0, Z_NEAR * 0.85, Z_FAR * 0.85]
+          : [0];
+
+      for (const z of zs) {
         const geo = new THREE.SphereGeometry(r, 12, 12);
-        const mat = new THREE.MeshStandardMaterial({ color });
+        const mat = new THREE.MeshStandardMaterial({
+          color,
+          transparent: zs.length === 1,
+          opacity: zs.length === 1 ? 0.55 : 1,
+        });
         const mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(n.x, n.y, z);
         mesh.userData.nodeId = n.id;
         mesh.castShadow = true;
         this.nodeGroup.add(mesh);
-        return mesh;
-      };
-
-      this.nodeMeshes.set(n.id, { near: make(Z_NEAR), far: make(Z_FAR) });
+        meshes.push(mesh);
+      }
+      this.nodeMeshes.set(n.id, meshes);
     }
   }
 
@@ -297,9 +333,9 @@ export class BridgeScene {
     highlightFailed = false,
   ): void {
     const ids = new Set(members.map((m) => m.id));
-    for (const [id, pair] of this.memberMeshes) {
+    for (const [id, meshes] of this.memberMeshes) {
       if (!ids.has(id)) {
-        for (const mesh of [pair.near, pair.far]) {
+        for (const mesh of meshes) {
           this.memberGroup.remove(mesh);
           mesh.geometry.dispose();
           (mesh.material as THREE.Material).dispose();
@@ -318,17 +354,30 @@ export class BridgeScene {
       const my = (a.y + b.y) / 2;
       const angle = Math.atan2(b.y - a.y, b.x - a.x);
 
-      let color = 0xa1887f;
+      let color = m.role === 'base' ? 0xc8a882 : 0xa1887f;
       const r = resultMap.get(m.id);
       if (r) {
         color = utilizationColor(r.utilization);
         if (highlightFailed && r.failed) color = 0x7f0000;
       }
 
-      let pair = this.memberMeshes.get(m.id);
-      if (!pair) {
-        const make = () => {
-          const geo = new THREE.CylinderGeometry(MEMBER_RADIUS, MEMBER_RADIUS, 1, 8);
+      const isBase = m.role === 'base' && m.zLane != null;
+      const zs = isBase
+        ? [laneZ(m.zLane!)]
+        : [Z_NEAR, Z_FAR];
+      const radius = isBase ? BASE_RADIUS : MEMBER_RADIUS;
+
+      let meshes = this.memberMeshes.get(m.id);
+      if (!meshes || meshes.length !== zs.length) {
+        if (meshes) {
+          for (const mesh of meshes) {
+            this.memberGroup.remove(mesh);
+            mesh.geometry.dispose();
+            (mesh.material as THREE.Material).dispose();
+          }
+        }
+        meshes = zs.map(() => {
+          const geo = new THREE.CylinderGeometry(radius, radius, 1, 8);
           geo.rotateZ(Math.PI / 2);
           const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
           const mesh = new THREE.Mesh(geo, mat);
@@ -337,15 +386,13 @@ export class BridgeScene {
           mesh.receiveShadow = true;
           this.memberGroup.add(mesh);
           return mesh;
-        };
-        pair = { near: make(), far: make() };
-        this.memberMeshes.set(m.id, pair);
+        });
+        this.memberMeshes.set(m.id, meshes);
       }
 
-      for (const [mesh, z] of [
-        [pair.near, Z_NEAR],
-        [pair.far, Z_FAR],
-      ] as const) {
+      for (let i = 0; i < meshes.length; i++) {
+        const mesh = meshes[i]!;
+        const z = zs[i]!;
         mesh.scale.set(L, 1, 1);
         mesh.position.set(mx, my, z);
         mesh.rotation.set(0, 0, angle);
@@ -357,17 +404,16 @@ export class BridgeScene {
   }
 
   /**
-   * Visual-only near↔far connectors at every node that participates in a member.
-   * CRITICAL: these must NEVER be pushed into the 2D `members` list — they have
-   * zero XY length and would make the DSM stiffness matrix singular.
+   * Visual-only near↔far connectors at nodes that participate in side-truss
+   * members (not base-only). Never enters the 2D members list.
    */
   private syncTransverse(nodes: NodeDef[], members: MemberDef[]): void {
     const used = new Set<number>();
     for (const m of members) {
+      if (m.role === 'base') continue;
       used.add(m.n1);
       used.add(m.n2);
     }
-    // Always show transverse at supports for abutment context
     for (const n of nodes) {
       if (n.support !== 'none') used.add(n.id);
     }
@@ -394,7 +440,6 @@ export class BridgeScene {
           1,
           8,
         );
-        // Align cylinder along Z (default is Y)
         geo.rotateX(Math.PI / 2);
         const mat = new THREE.MeshStandardMaterial({
           color: n.isDeck ? 0x8d6e63 : 0xa1887f,
@@ -447,10 +492,9 @@ export class BridgeScene {
         ? { x: mx, y: my + rise }
         : { x: mx + px * rise, y: my + py * rise };
 
-    for (const z of [Z_NEAR, Z_FAR]) {
+    for (const z of [Z_NEAR, Z_FAR, 0]) {
       let pts: THREE.Vector3[];
       if (curved) {
-        // Quadratic Bezier through upward apex (matches Lengkung placement)
         pts = [];
         const steps = 12;
         for (let i = 0; i <= steps; i++) {
@@ -469,12 +513,6 @@ export class BridgeScene {
       const geo = new THREE.BufferGeometry().setFromPoints(pts);
       this.previewGroup.add(new THREE.Line(geo, mat));
     }
-    // Cross preview on deck connection
-    const crossGeo = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(to.x, to.y, Z_NEAR),
-      new THREE.Vector3(to.x, to.y, Z_FAR),
-    ]);
-    this.previewGroup.add(new THREE.Line(crossGeo, mat.clone()));
   }
 
   setLoadArrow(node: NodeDef | undefined, magnitude: number, visible: boolean): void {
@@ -490,7 +528,6 @@ export class BridgeScene {
 
     const len = 0.4 + Math.min(magnitude / 40, 1.2);
     const mat = new THREE.MeshStandardMaterial({ color: 0xef5350 });
-    // Show load on both faces + mid
     for (const z of [0, Z_NEAR * 0.5, Z_FAR * 0.5]) {
       const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, len, 8), mat);
       shaft.position.set(node.x, node.y - len / 2 - 0.2, z);
@@ -504,21 +541,41 @@ export class BridgeScene {
   }
 
   highlightNode(id: number | null): void {
-    for (const [nid, pair] of this.nodeMeshes) {
+    for (const [nid, meshes] of this.nodeMeshes) {
       const s = nid === id ? 1.45 : 1;
-      pair.near.scale.setScalar(s);
-      pair.far.scale.setScalar(s);
+      for (const mesh of meshes) mesh.scale.setScalar(s);
     }
   }
 
-  /** Raycast to the mid XY build plane; sticks are auto-mirrored to near/far. */
+  /** Ghost node preview where a free joint would be created. */
+  setGhostNode(pos: Vec2 | null): void {
+    const existing = this.previewGroup.children.find((c) => c.userData.ghost);
+    if (existing) {
+      this.previewGroup.remove(existing);
+      if (existing instanceof THREE.Mesh) {
+        existing.geometry.dispose();
+        (existing.material as THREE.Material).dispose();
+      }
+    }
+    if (!pos) return;
+    const geo = new THREE.SphereGeometry(NODE_RADIUS * 0.9, 10, 10);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x4fc3f7,
+      transparent: true,
+      opacity: 0.55,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(pos.x, pos.y, 0);
+    mesh.userData.ghost = true;
+    this.previewGroup.add(mesh);
+  }
+
   worldFromClient(clientX: number, clientY: number, rect: DOMRect): Vec2 {
     this.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
     this.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.pointer, this.camera);
     const hit = new THREE.Vector3();
     if (!this.raycaster.ray.intersectPlane(this.buildPlane, hit)) {
-      // Fallback: project along camera ray at origin distance
       const dir = this.raycaster.ray.direction.clone();
       const t = -this.raycaster.ray.origin.z / (dir.z || 1e-6);
       hit.copy(this.raycaster.ray.origin).addScaledVector(dir, t);

@@ -254,3 +254,29 @@ button:disabled {
     font-size: 0.8rem;
   }
 }
+
+button.accent {
+  background: #2e7d32;
+  color: #e8f5e9;
+}
+button.accent:hover {
+  background: #388e3c;
+}
+button.accent:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.base-counter {
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--panel-2);
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+.base-counter.done {
+  color: #042f4a;
+  background: var(--ok);
+}

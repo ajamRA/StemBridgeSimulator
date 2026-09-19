@@ -7,6 +7,11 @@ export type SupportType = 'none' | 'pin' | 'roller';
 
 export type StickShape = 'lurus' | 'lengkung';
 
+/** Classroom stick length preset — Panjang may span the full gap. */
+export type StickLengthPreset = 1 | 2 | 'panjang' | 'auto';
+
+export type MemberRole = 'normal' | 'base';
+
 export interface NodeDef {
   id: number;
   x: number;
@@ -19,6 +24,8 @@ export interface NodeDef {
    * Included in the DSM; excluded from placement picking.
    */
   isApex?: boolean;
+  /** User-placed free joint (soft-snapped), not part of the fixed abutment grid. */
+  isFree?: boolean;
 }
 
 export interface MemberDef {
@@ -26,9 +33,8 @@ export interface MemberDef {
   n1: number;
   n2: number;
   /**
-   * Visual-only bars (e.g. mistaken Near↔Far Z connectors) must never enter the
-   * 2D DSM. Prefer keeping such geometry entirely out of `members` (scene meshes);
-   * this flag is a safety net if a bar is ever tagged visual.
+   * Visual-only bars (e.g. extra parallel base rails beyond the first structural
+   * chord) must never enter the 2D DSM. Prefer keeping such geometry tagged.
    */
   visualOnly?: boolean;
   /** Straight chord vs curved arch (Lengkung uses two segments + apex). */
@@ -37,6 +43,13 @@ export interface MemberDef {
   archGroupId?: number;
   /** Original chord endpoints [a,b] for a Lengkung segment. */
   archChord?: [number, number];
+  /** Deck base rail (full-span lidi panjang) vs normal brace/chord. */
+  role?: MemberRole;
+  /**
+   * Parallel deck lane index 0..BASE_RAIL_TARGET-1 for base rails.
+   * Side-truss members omit this and render on near/far planes.
+   */
+  zLane?: number;
 }
 
 export interface MemberResult {

@@ -1,26 +1,35 @@
 import {
+  BASE_RAIL_TARGET,
   COMPRESSION_CAPACITY,
   DEFAULT_LOAD,
+  NODE_PICK_RADIUS,
+  SOFT_SNAP,
   TENSION_CAPACITY,
 } from '../engine/constants';
 import { progressiveFailure } from '../engine/failure';
 import {
   addArchMember,
+  addBaseRail,
   addMember,
   allNodes,
   cloneApexNodes,
+  cloneFreeNodes,
   cloneMembers,
+  countBaseRails,
   findMemberNearPoint,
   findNodeById,
+  findOrCreateNodeNear,
   hasArchBetween,
   hasMember,
   isAllowedMemberForLength,
   pickableNodes,
   pruneOrphanApexes,
+  promoteBaseRails,
+  pruneOrphanFreeNodes,
   removeMemberById,
   removeMemberOrArch,
   resetMemberIds,
-  type StickLengthPreset,
+  softSnapToGrid,
 } from '../engine/model';
 import { solveTruss } from '../engine/solver';
 import type {
@@ -28,6 +37,7 @@ import type {
   MemberDef,
   MemberResult,
   NodeDef,
+  StickLengthPreset,
   StickShape,
   Vec2,
 } from '../engine/types';
@@ -39,6 +49,7 @@ import {
   setActiveLength,
   setActiveMode,
   setActiveShape,
+  setBaseCounter,
   type UIHandles,
 } from '../ui/dom';
 import * as THREE from 'three';
@@ -47,18 +58,21 @@ import * as THREE from 'three';
 const CLICK_SLOP_PX = 6;
 
 const TIP_MS =
-  'Tip: Base: pilih Panjang. Sokongan: pilih Pendek. Lengkung sesuai untuk busur/arch di bahagian atas atau geladak (auto nod puncak + 2 ahli axial).';
+  'Susun 7 lidi panjang sebagai base, kemudian brace dengan pendek. Klik kosong = nod baharu (soft snap); + Base = 1 lidi penuh merentangi span.';
 
 interface BuildSnapshot {
   members: MemberDef[];
   apexes: NodeDef[];
+  free: NodeDef[];
 }
 
 export class Game {
   private ui: UIHandles;
   private scene: BridgeScene;
-  /** Fixed snap-grid nodes (supports + deck). */
+  /** Fixed snap-grid nodes (supports + deck magnets). */
   private gridNodes: NodeDef[];
+  /** User-placed free joints. */
+  private freeNodes: NodeDef[] = [];
   /** Lengkung apex nodes (not pickable). */
   private apexNodes: NodeDef[] = [];
   private members: MemberDef[] = [];
@@ -70,15 +84,17 @@ export class Game {
   private tested = false;
 
   /** Default Panjang for base-first classroom workflow. */
-  private selectedLength: StickLengthPreset = 3;
+  private selectedLength: StickLengthPreset = 'panjang';
   private selectedShape: StickShape = 'lurus';
 
   private dragFrom: NodeDef | null = null;
   private pointerDown = false;
-  private interacting = false; // build/delete gesture — orbit locked
+  private interacting = false;
   private downClient: { x: number; y: number } | null = null;
   private stickyNode: NodeDef | null = null;
   private shiftHeld = false;
+  /** Pending free node created on pointerdown (rolled back if cancelled). */
+  private pendingCreated: NodeDef | null = null;
 
   constructor(app: HTMLElement) {
     this.ui = mountUI(app);
@@ -97,6 +113,7 @@ export class Game {
 
     this.refreshNodes();
     this.syncScene();
+    this.updateBaseCounter();
     this.bindUI();
     this.bindPointer();
     this.onResize();
@@ -112,11 +129,15 @@ export class Game {
   }
 
   private nodes(): NodeDef[] {
-    return allNodes(this.gridNodes, this.apexNodes);
+    return allNodes(this.gridNodes, this.apexNodes, this.freeNodes);
   }
 
   private refreshNodes(): void {
     this.scene.setNodes(this.nodes());
+  }
+
+  private updateBaseCounter(): void {
+    setBaseCounter(this.ui, countBaseRails(this.members));
   }
 
   private bindUI(): void {
@@ -125,6 +146,7 @@ export class Game {
     this.ui.btnPadam.addEventListener('click', () => this.setMode('padam'));
     this.ui.btnUndo.addEventListener('click', () => this.undo());
     this.ui.btnReset.addEventListener('click', () => this.reset());
+    this.ui.btnBase.addEventListener('click', () => this.placeBaseRail());
     this.ui.loadSlider.addEventListener('input', () => {
       this.loadMagnitude = Number(this.ui.loadSlider.value);
       this.ui.loadVal.textContent = String(this.loadMagnitude);
@@ -136,12 +158,13 @@ export class Game {
       btn.addEventListener('click', () => {
         const raw = btn.dataset.length;
         if (raw === 'auto') this.selectedLength = 'auto';
-        else if (raw === '1' || raw === '2' || raw === '3') {
-          this.selectedLength = Number(raw) as 1 | 2 | 3;
+        else if (raw === 'panjang') this.selectedLength = 'panjang';
+        else if (raw === '1' || raw === '2') {
+          this.selectedLength = Number(raw) as 1 | 2;
         } else return;
         setActiveLength(this.ui, this.selectedLength);
         this.flash(
-          `Panjang lidi: ${this.lengthLabel()}. Base → Panjang, sokongan → Pendek.`,
+          `Panjang lidi: ${this.lengthLabel()}. Tip: + Base untuk 7 lidi penuh; Pendek untuk brace.`,
           '',
         );
       });
@@ -183,17 +206,16 @@ export class Game {
   private lengthLabel(): string {
     switch (this.selectedLength) {
       case 1:
-        return 'Pendek (1)';
+        return 'Pendek';
       case 2:
-        return 'Sederhana (2)';
-      case 3:
-        return 'Panjang (3)';
+        return 'Sederhana';
+      case 'panjang':
+        return 'Panjang (hingga rentang)';
       default:
         return 'Auto';
     }
   }
 
-  /** Shift+left-drag pans (standard OrbitControls companion to right-drag pan). */
   private applyShiftPan(): void {
     if (this.interacting) return;
     this.scene.controls.mouseButtons.LEFT = this.shiftHeld
@@ -201,31 +223,77 @@ export class Game {
       : THREE.MOUSE.ROTATE;
   }
 
-  /**
-   * Snap only to pickable grid nodes. When `from` is set (second endpoint),
-   * restrict to targets valid for the selected stick length.
-   */
-  private nearestBuildNode(world: Vec2, from: NodeDef | null): NodeDef | null {
-    const candidates = pickableNodes(this.gridNodes);
+  /** Resolve a world hit to a pickable node, optionally creating a free joint. */
+  private resolveNode(
+    world: Vec2,
+    from: NodeDef | null,
+    allowCreate: boolean,
+  ): NodeDef | null {
+    const candidates = pickableNodes(this.nodes());
     if (!from) {
-      return this.scene.nearestNode(candidates, world);
+      const near = this.scene.nearestNode(candidates, world, NODE_PICK_RADIUS);
+      if (near) return near;
+      if (!allowCreate) return null;
+      const { node, created } = findOrCreateNodeNear(
+        this.gridNodes,
+        this.freeNodes,
+        this.apexNodes,
+        world,
+        SOFT_SNAP * 1.5,
+      );
+      if (created) {
+        this.pendingCreated = node;
+        this.refreshNodes();
+      }
+      return node;
     }
-    const valid = candidates.filter(
+
+    // Second endpoint: prefer valid targets; may create free node if Auto/Panjang
+    const validExisting = candidates.filter(
       (n) =>
         n.id !== from.id &&
-        isAllowedMemberForLength(
-          this.gridNodes,
-          from.id,
-          n.id,
-          this.selectedLength,
-        ) &&
+        isAllowedMemberForLength(this.nodes(), from.id, n.id, this.selectedLength) &&
         !hasMember(this.members, from.id, n.id) &&
         !(
           this.selectedShape === 'lengkung' &&
           hasArchBetween(this.members, from.id, n.id)
         ),
     );
-    return this.scene.nearestNode(valid, world, 0.65);
+    const nearValid = this.scene.nearestNode(validExisting, world, NODE_PICK_RADIUS);
+    if (nearValid) return nearValid;
+
+    const nearAny = this.scene.nearestNode(
+      candidates.filter((n) => n.id !== from.id),
+      world,
+      NODE_PICK_RADIUS,
+    );
+    if (nearAny) return nearAny;
+
+    if (!allowCreate) return null;
+    const { node, created } = findOrCreateNodeNear(
+      this.gridNodes,
+      this.freeNodes,
+      this.apexNodes,
+      world,
+      SOFT_SNAP * 1.5,
+    );
+    if (created) {
+      this.pendingCreated = node;
+      this.refreshNodes();
+    }
+    return node;
+  }
+
+  private discardPendingCreated(): void {
+    if (!this.pendingCreated) return;
+    const id = this.pendingCreated.id;
+    const used = this.members.some((m) => m.n1 === id || m.n2 === id);
+    if (!used) {
+      const i = this.freeNodes.findIndex((n) => n.id === id);
+      if (i >= 0) this.freeNodes.splice(i, 1);
+      this.refreshNodes();
+    }
+    this.pendingCreated = null;
   }
 
   private bindPointer(): void {
@@ -242,6 +310,7 @@ export class Game {
         canvas.setPointerCapture(e.pointerId);
         this.pointerDown = true;
         this.downClient = { x: e.clientX, y: e.clientY };
+        this.pendingCreated = null;
 
         if (e.button === 1 || e.button === 2) return;
         if (this.shiftHeld) return;
@@ -256,12 +325,13 @@ export class Game {
         }
 
         if (this.mode === 'bina') {
-          const node = this.nearestBuildNode(world, null);
+          const node = this.resolveNode(world, null, true);
           if (node) {
             this.interacting = true;
             this.scene.setOrbitEnabled(false);
             this.dragFrom = node;
             this.scene.highlightNode(node.id);
+            this.scene.setGhostNode(null);
           }
         }
       },
@@ -272,18 +342,41 @@ export class Game {
       if (!this.pointerDown) {
         const world = getPos(e);
         const from = this.stickyNode;
-        const hover = this.nearestBuildNode(world, from);
-        this.scene.highlightNode(hover?.id ?? this.stickyNode?.id ?? null);
-        if (from && hover) {
-          const valid = this.canPlace(from.id, hover.id);
-          this.scene.setPreview(
-            { x: from.x, y: from.y },
-            { x: hover.x, y: hover.y },
-            valid,
-            this.selectedShape === 'lengkung',
+        if (from) {
+          const hover = this.resolveNode(world, from, false);
+          this.scene.highlightNode(hover?.id ?? from.id);
+          if (hover) {
+            const valid = this.canPlace(from.id, hover.id);
+            this.scene.setPreview(
+              { x: from.x, y: from.y },
+              { x: hover.x, y: hover.y },
+              valid,
+              this.selectedShape === 'lengkung',
+            );
+            this.scene.setGhostNode(null);
+          } else {
+            const snapped = softSnapToGrid(world.x, world.y);
+            this.scene.setPreview(
+              { x: from.x, y: from.y },
+              snapped,
+              false,
+              this.selectedShape === 'lengkung',
+            );
+            this.scene.setGhostNode(snapped);
+          }
+        } else {
+          const hover = this.scene.nearestNode(
+            pickableNodes(this.nodes()),
+            world,
+            NODE_PICK_RADIUS,
           );
-        } else if (!from) {
+          this.scene.highlightNode(hover?.id ?? null);
           this.scene.setPreview(null, null, false);
+          if (!hover && this.mode === 'bina') {
+            this.scene.setGhostNode(softSnapToGrid(world.x, world.y));
+          } else {
+            this.scene.setGhostNode(null);
+          }
         }
         return;
       }
@@ -291,7 +384,7 @@ export class Game {
       if (!this.interacting || !this.dragFrom || this.mode !== 'bina') return;
 
       const world = getPos(e);
-      const hover = this.nearestBuildNode(world, this.dragFrom);
+      const hover = this.resolveNode(world, this.dragFrom, false);
       this.scene.highlightNode(hover?.id ?? this.dragFrom.id);
 
       if (hover) {
@@ -302,8 +395,16 @@ export class Game {
           valid,
           this.selectedShape === 'lengkung',
         );
+        this.scene.setGhostNode(null);
       } else {
-        this.scene.setPreview(null, null, false);
+        const snapped = softSnapToGrid(world.x, world.y);
+        this.scene.setPreview(
+          { x: this.dragFrom.x, y: this.dragFrom.y },
+          snapped,
+          false,
+          this.selectedShape === 'lengkung',
+        );
+        this.scene.setGhostNode(snapped);
       }
     });
 
@@ -319,8 +420,10 @@ export class Game {
       this.scene.setOrbitEnabled(true);
       this.applyShiftPan();
       this.scene.setPreview(null, null, false);
+      this.scene.setGhostNode(null);
 
       if (!wasInteracting || this.mode !== 'bina' || !from || e.button !== 0) {
+        this.discardPendingCreated();
         return;
       }
 
@@ -329,29 +432,46 @@ export class Game {
         Math.hypot(e.clientX - down.x, e.clientY - down.y) > CLICK_SLOP_PX;
 
       const world = getPos(e);
-      const to = this.nearestBuildNode(world, from);
 
-      if (to && to.id !== from.id) {
-        this.tryAddMember(from.id, to.id);
-        this.stickyNode = null;
-        this.scene.highlightNode(null);
+      // Drag to another point — create/connect endpoint
+      if (moved) {
+        const to = this.resolveNode(world, from, true);
+        if (to && to.id !== from.id) {
+          this.tryAddMember(from.id, to.id);
+          this.stickyNode = null;
+          this.scene.highlightNode(null);
+          this.pendingCreated = null;
+          return;
+        }
+        this.discardPendingCreated();
         return;
       }
 
-      // Short click on same node → two-click sticky workflow
-      const same = this.nearestBuildNode(world, null);
-      if (same && same.id === from.id && !moved) {
-        if (this.stickyNode && this.stickyNode.id !== same.id) {
-          this.tryAddMember(this.stickyNode.id, same.id);
-          this.stickyNode = null;
-          this.scene.highlightNode(null);
-        } else if (this.stickyNode && this.stickyNode.id === same.id) {
-          this.stickyNode = null;
-          this.scene.highlightNode(null);
-        } else {
-          this.stickyNode = same;
-          this.scene.highlightNode(same.id);
-        }
+      // Short click: two-click sticky workflow (may place free node as sticky)
+      const same = this.scene.nearestNode(
+        pickableNodes(this.nodes()),
+        world,
+        NODE_PICK_RADIUS,
+      );
+      const clicked = same ?? from;
+
+      if (this.stickyNode && this.stickyNode.id !== clicked.id) {
+        this.tryAddMember(this.stickyNode.id, clicked.id);
+        this.stickyNode = null;
+        this.scene.highlightNode(null);
+        this.pendingCreated = null;
+      } else if (this.stickyNode && this.stickyNode.id === clicked.id) {
+        this.stickyNode = null;
+        this.scene.highlightNode(null);
+        this.discardPendingCreated();
+      } else {
+        this.stickyNode = clicked;
+        this.scene.highlightNode(clicked.id);
+        this.pendingCreated = null; // keep free node as sticky start
+        this.flash(
+          'Nod dipilih — klik nod kedua (atau ruang kosong) untuk sambung lidi.',
+          '',
+        );
       }
     });
 
@@ -360,23 +480,40 @@ export class Game {
       this.dragFrom = null;
       this.downClient = null;
       this.interacting = false;
+      this.discardPendingCreated();
       this.scene.setOrbitEnabled(true);
       this.applyShiftPan();
       this.scene.setPreview(null, null, false);
+      this.scene.setGhostNode(null);
     });
 
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
+  private placeBaseRail(): void {
+    if (countBaseRails(this.members) >= BASE_RAIL_TARGET) {
+      this.flash(`Sudah ${BASE_RAIL_TARGET} lidi base.`, 'warn');
+      return;
+    }
+    this.pushUndo();
+    const placed = addBaseRail(this.gridNodes, this.members);
+    if (!placed) {
+      this.undoStack.pop();
+      this.flash('Tidak dapat menambah base rail.', 'warn');
+      return;
+    }
+    this.invalidateTest();
+    this.syncScene();
+    this.updateBaseCounter();
+    const n = countBaseRails(this.members);
+    this.flash(
+      `Base lidi panjang ditambah (lorong ${placed.lane + 1}/${BASE_RAIL_TARGET}). Base: ${n}/${BASE_RAIL_TARGET}.`,
+      n >= BASE_RAIL_TARGET ? 'ok' : '',
+    );
+  }
+
   private canPlace(n1: number, n2: number): boolean {
-    if (
-      !isAllowedMemberForLength(
-        this.gridNodes,
-        n1,
-        n2,
-        this.selectedLength,
-      )
-    ) {
+    if (!isAllowedMemberForLength(this.nodes(), n1, n2, this.selectedLength)) {
       return false;
     }
     if (this.selectedShape === 'lengkung') {
@@ -386,18 +523,13 @@ export class Game {
   }
 
   private tryAddMember(n1: number, n2: number): void {
-    if (
-      !isAllowedMemberForLength(
-        this.gridNodes,
-        n1,
-        n2,
-        this.selectedLength,
-      )
-    ) {
+    if (!isAllowedMemberForLength(this.nodes(), n1, n2, this.selectedLength)) {
       this.flash(
-        `Panjang tidak sepadan dengan ${this.lengthLabel()} (atau pepenjuru tidak dibenarkan).`,
+        `Panjang tidak sepadan dengan ${this.lengthLabel()}. Cuba Auto, atau + Base untuk lidi penuh.`,
         'warn',
       );
+      pruneOrphanFreeNodes(this.members, this.freeNodes);
+      this.refreshNodes();
       return;
     }
 
@@ -408,7 +540,7 @@ export class Game {
       }
       this.pushUndo();
       const placed = addArchMember(
-        this.gridNodes,
+        [...this.gridNodes, ...this.freeNodes],
         this.apexNodes,
         this.members,
         n1,
@@ -422,6 +554,7 @@ export class Game {
       this.invalidateTest();
       this.refreshNodes();
       this.syncScene();
+      this.updateBaseCounter();
       this.flash(
         `Lengkung ditambah (nod puncak + 2 ahli). Jumlah ahli: ${this.members.length}.`,
         'ok',
@@ -437,8 +570,9 @@ export class Game {
     addMember(this.members, n1, n2, { shape: 'lurus' });
     this.invalidateTest();
     this.syncScene();
+    this.updateBaseCounter();
     this.flash(
-      `Lidi lurus ditambah pada kedua-dua sisi 3D (${this.members.length} ahli).`,
+      `Lidi ditambah (${this.members.length} ahli). Base: ${countBaseRails(this.members)}/${BASE_RAIL_TARGET}.`,
       'ok',
     );
   }
@@ -451,12 +585,19 @@ export class Game {
     }
     this.pushUndo();
     const removed = removeMemberOrArch(this.members, this.apexNodes, m.id);
+    pruneOrphanFreeNodes(this.members, this.freeNodes);
     this.invalidateTest();
     this.refreshNodes();
     this.syncScene();
+    this.updateBaseCounter();
     const arch = removed.some((r) => r.archGroupId != null);
+    const base = removed.some((r) => r.role === 'base');
     this.flash(
-      arch ? 'Busur lengkung dipadam (kedua-dua kaki + puncak).' : 'Lidi dipadam (kedua-dua sisi).',
+      arch
+        ? 'Busur lengkung dipadam.'
+        : base
+          ? `Base rail dipadam. Base: ${countBaseRails(this.members)}/${BASE_RAIL_TARGET}.`
+          : 'Lidi dipadam.',
       'ok',
     );
   }
@@ -467,11 +608,12 @@ export class Game {
     this.stickyNode = null;
     this.scene.highlightNode(null);
     this.scene.setPreview(null, null, false);
+    this.scene.setGhostNode(null);
 
     if (mode === 'bina') {
       this.invalidateTest();
       this.flash(
-        'Mod Bina — klik dua nod (auto-cermin 3D). Seret kiri = orbit kamera.',
+        'Mod Bina — klik kosong = nod; dua nod = sambung; + Base = lidi penuh span.',
         '',
       );
     } else if (mode === 'padam') {
@@ -506,8 +648,11 @@ export class Game {
       for (const id of prog.removedIds) {
         removeMemberById(this.members, id);
       }
+      promoteBaseRails(this.members);
       pruneOrphanApexes(this.members, this.apexNodes);
+      pruneOrphanFreeNodes(this.members, this.freeNodes);
       this.refreshNodes();
+      this.updateBaseCounter();
     }
 
     this.lastResults = prog.final.ok
@@ -524,7 +669,7 @@ export class Game {
         tip: TIP_MS,
         statusHtml:
           prog.final.message ??
-          'Struktur tidak stabil! Perlu segi tiga pada satah XY (brace Near↔Far hanya visual).',
+          'Struktur tidak stabil! Tambah segi tiga / brace. (Base multi-lorong ≈ 1 chord dalam DSM 2D.)',
         statusClass: 'bad',
         meta: `Ahli digugurkan: ${prog.removedIds.length}. Kapasiti: T=${TENSION_CAPACITY}, C=${COMPRESSION_CAPACITY}.`,
       });
@@ -566,7 +711,7 @@ export class Game {
       tip: TIP_MS,
       statusHtml: msg,
       statusClass,
-      meta: `Beban=${this.loadMagnitude} ↓ pada nod geladak. Kritikal: ${forceStr}. Langkah: ${prog.steps.length}. Fizik: DSM 2D (sisi cermin visual).`,
+      meta: `Beban=${this.loadMagnitude} ↓. Kritikal: ${forceStr}. Base visual: ${countBaseRails(this.members)}/${BASE_RAIL_TARGET}. Fizik: DSM 2D (multi-rail ≈ 1 chord).`,
     });
   }
 
@@ -587,6 +732,7 @@ export class Game {
     this.undoStack.push({
       members: cloneMembers(this.members),
       apexes: cloneApexNodes(this.apexNodes),
+      free: cloneFreeNodes(this.freeNodes),
     });
     if (this.undoStack.length > 50) this.undoStack.shift();
   }
@@ -599,8 +745,10 @@ export class Game {
     }
     this.members = prev.members;
     this.apexNodes = prev.apexes;
+    this.freeNodes = prev.free;
     this.invalidateTest();
     this.refreshNodes();
+    this.updateBaseCounter();
     this.flash('Undo berjaya.', 'ok');
   }
 
@@ -608,14 +756,16 @@ export class Game {
     this.pushUndo();
     this.members = [];
     this.apexNodes = [];
+    this.freeNodes = [];
     resetMemberIds();
     this.loadMagnitude = defaultLevel.defaultLoad;
     this.ui.loadSlider.value = String(this.loadMagnitude);
     this.ui.loadVal.textContent = String(this.loadMagnitude);
     this.invalidateTest();
     this.refreshNodes();
+    this.updateBaseCounter();
     this.setMode('bina');
-    this.flash('Reset — mula bina semula.', 'ok');
+    this.flash('Reset — mula bina semula. Cuba + Base ×7.', 'ok');
   }
 
   private syncScene(highlightFailed = false): void {
@@ -638,13 +788,13 @@ export class Game {
       tip: TIP_MS,
       statusHtml: msg,
       statusClass: cls,
-      meta: `Ahli: ${this.members.length} · Lidi: ${this.lengthLabel()} · ${this.selectedShape === 'lengkung' ? 'Lengkung' : 'Lurus'} · Beban: ${this.loadMagnitude}`,
+      meta: `Ahli: ${this.members.length} · Base: ${countBaseRails(this.members)}/${BASE_RAIL_TARGET} · Lidi: ${this.lengthLabel()} · ${this.selectedShape === 'lengkung' ? 'Lengkung' : 'Lurus'} · Beban: ${this.loadMagnitude}`,
     });
   }
 
   private showIdleTip(): void {
     this.flash(
-      'Mod Bina — klik dua nod (lidi cermin ke Near/Far). Pilih Panjang untuk base, Pendek untuk sokongan.',
+      'Susun 7 lidi panjang sebagai base (+ Base), kemudian brace dengan pendek. Klik kosong = nod baharu.',
       '',
     );
   }
