@@ -11,17 +11,20 @@ import {
   addArchMember,
   addBaseRail,
   addMember,
+  addTransverseMember,
   allNodes,
   cloneApexNodes,
   cloneFreeNodes,
   cloneMembers,
   countBaseRails,
+  ensureWallMembersStructural,
   findMemberNearPoint,
   isAbutmentDeckSpan,
   findNodeById,
   findOrCreateNodeNear,
   hasArchBetween,
   hasMember,
+  hasTransverse,
   isAllowedMemberForLength,
   nextFreeBaseLane,
   pickableNodes,
@@ -62,7 +65,7 @@ import * as THREE from 'three';
 const CLICK_SLOP_PX = 6;
 
 const TIP_MS =
-  'Truss pada lorong 1 dan 7 (tepi). Tengah untuk lalu. Tarik = 1 lidi; + Base = 1 lorong; Uji tunjuk patah.';
+  'Truss pada lorong 1 dan 7 (tepi). Merintang = sambung Kiri↔Kanan. + Base = 1 lorong; Uji = warna tegasan kedua-dua dinding.';
 
 interface BuildSnapshot {
   members: MemberDef[];
@@ -207,17 +210,30 @@ export class Game {
     for (const btn of this.ui.wallButtons) {
       btn.addEventListener('click', () => {
         const raw = btn.dataset.wall;
-        if (raw !== 'kiri' && raw !== 'kanan' && raw !== 'auto') return;
+        if (raw !== 'kiri' && raw !== 'kanan' && raw !== 'auto' && raw !== 'merintang') {
+          return;
+        }
         this.wallMode = raw;
+        this.stickyNode = null;
+        this.scene.highlightNode(null);
+        this.scene.setPreview(null, null, false);
         setActiveWall(this.ui, this.wallMode);
         this.scene.setWallMode(this.wallMode);
+        this.refreshNodes();
         const label =
           raw === 'kiri'
             ? 'Kiri (lorong 1 — dinding truss)'
             : raw === 'kanan'
               ? 'Kanan (lorong 7 — dinding truss)'
-              : 'Auto — dinding luar terdekat';
-        this.flash(`Dinding aktif: ${label}. Tengah (lorong 2–6) untuk lalu.`, '');
+              : raw === 'merintang'
+                ? 'Merintang (Kiri↔Kanan) — klik nod kiri, kemudian nod kanan (XY sama/dekat)'
+                : 'Auto — dinding luar terdekat';
+        this.flash(
+          raw === 'merintang'
+            ? `${label}. Satu lidi merintang merentas laluan Z.`
+            : `Dinding aktif: ${label}. Tengah (lorong 2–6) untuk lalu.`,
+          '',
+        );
       });
     }
 
@@ -241,6 +257,7 @@ export class Game {
 
 
   private currentWallLane(clientX?: number, clientY?: number): number {
+    if (this.wallMode === 'merintang') return OUTER_LANE_KIRI;
     if (this.wallMode === 'auto' && clientX != null && clientY != null) {
       const rect = this.ui.canvas.getBoundingClientRect();
       return this.scene.resolveWallFromClient(clientX, clientY, rect);
@@ -404,6 +421,15 @@ export class Game {
               this.selectedShape === 'lengkung',
             );
             this.scene.setGhostNode(null);
+          } else if (this.wallMode === 'merintang') {
+            // Preview pure cross-brace at sticky XY across the roadway
+            this.scene.setPreview(
+              { x: from.x, y: from.y },
+              { x: from.x, y: from.y },
+              this.canPlace(from.id, from.id),
+              false,
+            );
+            this.scene.setGhostNode(null);
           } else {
             const snapped = softSnapToGrid(world.x, world.y);
             this.scene.setPreview(
@@ -422,7 +448,7 @@ export class Game {
           );
           this.scene.highlightNode(hover?.id ?? null);
           this.scene.setPreview(null, null, false);
-          if (!hover && this.mode === 'bina') {
+          if (!hover && this.mode === 'bina' && this.wallMode !== 'merintang') {
             this.scene.setGhostNode(softSnapToGrid(world.x, world.y));
           } else {
             this.scene.setGhostNode(null);
@@ -445,6 +471,14 @@ export class Game {
           { x: hover.x, y: hover.y },
           valid,
           this.selectedShape === 'lengkung',
+        );
+        this.scene.setGhostNode(null);
+      } else if (this.wallMode === 'merintang') {
+        this.scene.setPreview(
+          { x: this.dragFrom.x, y: this.dragFrom.y },
+          { x: this.dragFrom.x, y: this.dragFrom.y },
+          this.canPlace(this.dragFrom.id, this.dragFrom.id),
+          false,
         );
         this.scene.setGhostNode(null);
       } else {
@@ -513,15 +547,25 @@ export class Game {
         this.scene.highlightNode(null);
         this.pendingCreated = null;
       } else if (this.stickyNode && this.stickyNode.id === clicked.id) {
-        this.stickyNode = null;
-        this.scene.highlightNode(null);
-        this.discardPendingCreated();
+        // Merintang one-click helper: second click on same XY = pure cross-brace
+        if (this.wallMode === 'merintang') {
+          this.tryAddTransverse(clicked.id, clicked.id);
+          this.stickyNode = null;
+          this.scene.highlightNode(null);
+          this.pendingCreated = null;
+        } else {
+          this.stickyNode = null;
+          this.scene.highlightNode(null);
+          this.discardPendingCreated();
+        }
       } else {
         this.stickyNode = clicked;
         this.scene.highlightNode(clicked.id);
         this.pendingCreated = null; // keep free node as sticky start
         this.flash(
-          'Nod dipilih — klik nod kedua (atau ruang kosong) untuk sambung lidi.',
+          this.wallMode === 'merintang'
+            ? 'Nod dipilih — klik nod sepadan pada dinding lain (atau klik semula untuk merintang lurus Z).'
+            : 'Nod dipilih — klik nod kedua (atau ruang kosong) untuk sambung lidi.',
           '',
         );
       }
@@ -565,6 +609,16 @@ export class Game {
   }
 
   private canPlace(n1: number, n2: number): boolean {
+    if (this.wallMode === 'merintang') {
+      return !hasTransverse(
+        this.members,
+        n1,
+        n2,
+        OUTER_LANE_KIRI,
+        OUTER_LANE_KANAN,
+      );
+    }
+    if (n1 === n2) return false;
     if (!isAllowedMemberForLength(this.nodes(), n1, n2, this.selectedLength)) {
       return false;
     }
@@ -579,7 +633,55 @@ export class Game {
     return !hasMember(this.members, n1, n2, wall);
   }
 
+  /** Place one Merintang stick Kiri(lane0) ↔ Kanan(lane6). Same XY allowed. */
+  private tryAddTransverse(n1: number, n2: number): void {
+    if (hasTransverse(this.members, n1, n2, OUTER_LANE_KIRI, OUTER_LANE_KANAN)) {
+      this.flash('Merintang sudah wujud antara nod ini.', 'warn');
+      return;
+    }
+    // Prefer near-matching XY; allow skewed braces but warn if far
+    const a = findNodeById(this.nodes(), n1);
+    const b = findNodeById(this.nodes(), n2);
+    if (!a || !b) return;
+    const dxy = Math.hypot(b.x - a.x, b.y - a.y);
+    if (dxy > 2.5) {
+      this.flash(
+        'Nod terlalu jauh dalam XY — pilih nod sama/dekat pada dinding lain (atau klik semula nod yang sama).',
+        'warn',
+      );
+      return;
+    }
+    this.pushUndo();
+    const placed = addTransverseMember(
+      this.members,
+      n1,
+      n2,
+      OUTER_LANE_KIRI,
+      OUTER_LANE_KANAN,
+    );
+    if (!placed) {
+      this.undoStack.pop();
+      this.flash('Gagal menambah merintang.', 'warn');
+      return;
+    }
+    this.invalidateTest();
+    this.syncScene();
+    this.updateBaseCounter();
+    const same = n1 === n2 || dxy < 1e-6;
+    this.flash(
+      same
+        ? `Merintang ditambah merentas laluan (nod #${n1}). Dua dinding kini bersambung.`
+        : `Merintang condong ditambah (#${n1}↔#${n2}). Ahli: ${this.members.length}.`,
+      'ok',
+    );
+  }
+
   private tryAddMember(n1: number, n2: number): void {
+    if (this.wallMode === 'merintang') {
+      this.tryAddTransverse(n1, n2);
+      return;
+    }
+
     if (!isAllowedMemberForLength(this.nodes(), n1, n2, this.selectedLength)) {
       this.flash(
         `Panjang tidak sepadan dengan ${this.lengthLabel()}. Cuba Auto, atau + Base untuk lidi penuh.`,
@@ -680,7 +782,7 @@ export class Game {
     if (mode === 'bina') {
       this.invalidateTest();
       this.flash(
-        'Mod Bina — truss pada lorong 1 & 7 (Kiri/Kanan). Tengah untuk lalu. Tarik = 1 lidi.',
+        'Mod Bina — Kiri/Kanan = satu dinding; Merintang = sambung Kiri↔Kanan. Tengah untuk lalu.',
         '',
       );
     } else if (mode === 'padam') {
@@ -692,6 +794,9 @@ export class Game {
   private runTest(): void {
     this.mode = 'uji';
     setActiveMode(this.ui, 'uji');
+
+    // Legacy builds may have marked the second wall visualOnly — promote both walls.
+    ensureWallMembersStructural(this.members);
 
     const nodes = this.nodes();
     const loads = this.buildLoads();

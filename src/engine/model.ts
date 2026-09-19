@@ -106,7 +106,7 @@ export function hasMember(
   zLane?: number,
 ): boolean {
   return members.some((m) => {
-    if (m.role === 'base') return false;
+    if (m.role === 'base' || m.role === 'transverse') return false;
     const ends =
       (m.n1 === n1 && m.n2 === n2) || (m.n1 === n2 && m.n2 === n1);
     if (!ends) return false;
@@ -118,6 +118,53 @@ export function hasMember(
 
 export function hasBaseLane(members: MemberDef[], lane: number): boolean {
   return members.some((m) => m.role === 'base' && m.zLane === lane);
+}
+
+/** True if a transverse (Merintang) brace already spans these XY endpoints across the given Z lanes. */
+export function hasTransverse(
+  members: MemberDef[],
+  n1: number,
+  n2: number,
+  zFrom: number,
+  zTo: number,
+): boolean {
+  const lanePair = (a: number, b: number) =>
+    (a === zFrom && b === zTo) || (a === zTo && b === zFrom);
+  return members.some((m) => {
+    if (m.role !== 'transverse') return false;
+    const ends =
+      (m.n1 === n1 && m.n2 === n2) || (m.n1 === n2 && m.n2 === n1);
+    if (!ends) return false;
+    if (m.zLaneFrom == null || m.zLaneTo == null) return true;
+    return lanePair(m.zLaneFrom, m.zLaneTo);
+  });
+}
+
+/**
+ * Place one Merintang stick across the roadway (outer wall → outer wall).
+ * Same XY (n1===n2) is allowed — pure cross-brace with no XY length.
+ * Different XY = skewed transverse brace (XY projection enters the DSM).
+ */
+export function addTransverseMember(
+  members: MemberDef[],
+  n1: number,
+  n2: number,
+  zFrom: number,
+  zTo: number,
+): MemberDef | null {
+  if (zFrom === zTo) return null;
+  if (hasTransverse(members, n1, n2, zFrom, zTo)) return null;
+  const m: MemberDef = {
+    id: nextMemberId++,
+    n1,
+    n2,
+    shape: 'lurus',
+    role: 'transverse',
+    zLaneFrom: zFrom,
+    zLaneTo: zTo,
+  };
+  members.push(m);
+  return m;
 }
 
 /** Unique occupied deck Z lanes (arch legs on one lane count as one rail). */
@@ -154,7 +201,10 @@ export function addMember(
   n1: number,
   n2: number,
   extra?: Partial<
-    Pick<MemberDef, 'shape' | 'archGroupId' | 'archChord' | 'visualOnly' | 'role' | 'zLane'>
+    Pick<
+      MemberDef,
+      'shape' | 'archGroupId' | 'archChord' | 'visualOnly' | 'role' | 'zLane' | 'zLaneFrom' | 'zLaneTo'
+    >
   >,
 ): MemberDef | null {
   let opts = extra ? { ...extra } : undefined;
@@ -169,21 +219,25 @@ export function addMember(
     }
   } else if (hasMember(members, n1, n2, opts?.zLane)) {
     return null;
-  } else if (opts?.zLane != null) {
-    // Parallel side-wall brace: first structural, matching XY on other wall visualOnly
-    const alreadyStructural = members.some(
-      (m) =>
-        m.role !== 'base' &&
-        !m.visualOnly &&
-        ((m.n1 === n1 && m.n2 === n2) || (m.n1 === n2 && m.n2 === n1)),
-    );
-    if (alreadyStructural && opts.visualOnly == null) {
-      opts = { ...opts, visualOnly: true };
-    }
   }
+  // Both outer walls (lane 0 & 6) stay structural so Uji paints stress on BOTH.
+  // Same XY × 2 walls ≈ 2×EA — intentional dual-wall load sharing (like base rails).
   const m: MemberDef = { id: nextMemberId++, n1, n2, ...opts };
   members.push(m);
   return m;
+}
+
+/** Clear leftover visualOnly on side-truss (non-base) so both walls enter DSM / get colours. */
+export function ensureWallMembersStructural(members: MemberDef[]): number {
+  let n = 0;
+  for (const m of members) {
+    if (m.role === 'base' || m.role === 'transverse') continue;
+    if (m.visualOnly) {
+      m.visualOnly = false;
+      n++;
+    }
+  }
+  return n;
 }
 
 /**
@@ -282,15 +336,20 @@ export function cloneMembers(members: MemberDef[]): MemberDef[] {
  * Members that may enter the 2D axial DSM.
  *
  * Drops:
- * - non-base visualOnly bars (Near↔Far junk)
+ * - non-base visualOnly bars (legacy junk only — side walls must NOT be visualOnly)
  * - self-loops / zero XY length
+ * - pure Merintang (same XY, Z-only span)
  *
- * Parallel base rails (all Z lanes) DO enter the solve so 7 lidi share load —
- * same XY chord × N rails ≈ N×EA axial stiffness (classroom load-sharing feel).
+ * Parallel base rails AND both outer-wall trusses DO enter the solve —
+ * same XY chord × N ≈ N×EA (classroom dual-wall / multi-rail load sharing).
+ * Skewed transverse (different XY) contributes its XY projection.
  */
 export function membersForSolver(nodes: NodeDef[], members: MemberDef[]): MemberDef[] {
   return members.filter((m) => {
     if (m.visualOnly && m.role !== 'base') return false;
+    // Pure Merintang (same XY, span in Z only) has no XY axial length — skip DSM.
+    // Skewed transverse (different XY) contributes its XY projection like a normal brace.
+    if (m.role === 'transverse' && m.n1 === m.n2) return false;
     if (m.n1 === m.n2) return false;
     const a = findNodeById(nodes, m.n1);
     const b = findNodeById(nodes, m.n2);

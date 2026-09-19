@@ -10,7 +10,7 @@ export type StickShape = 'lurus' | 'lengkung';
 /** Classroom stick length preset — Panjang may span the full gap. */
 export type StickLengthPreset = 1 | 2 | 'panjang' | 'auto';
 
-export type MemberRole = 'normal' | 'base';
+export type MemberRole = 'normal' | 'base' | 'transverse';
 
 export interface NodeDef {
   id: number;
@@ -51,6 +51,13 @@ export interface MemberDef {
    * lanes only (0 = Kiri, last = Kanan) so the middle roadway stays clear.
    */
   zLane?: number;
+  /**
+   * Transverse (Merintang) member: spans two Z lanes across the roadway.
+   * Endpoints are XY node ids (often the same id for a pure cross-brace).
+   * Render: (x1,y1,zLaneFrom) → (x2,y2,zLaneTo).
+   */
+  zLaneFrom?: number;
+  zLaneTo?: number;
 }
 
 export interface MemberResult {
@@ -75,4 +82,4 @@ export interface SolveResult {
 export type GameMode = 'bina' | 'uji' | 'padam';
 
 /** Active through-truss side wall for build/snap. */
-export type WallMode = 'kiri' | 'kanan' | 'auto';
+export type WallMode = 'kiri' | 'kanan' | 'auto' | 'merintang';

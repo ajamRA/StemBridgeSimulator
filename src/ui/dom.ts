@@ -55,6 +55,7 @@ export function mountUI(app: HTMLElement): UIHandles {
           <button type="button" id="wall-kiri" data-wall="kiri" class="active" title="Bina pada lorong 1 (tepi kiri / near)">Kiri</button>
           <button type="button" id="wall-kanan" data-wall="kanan" title="Bina pada lorong 7 (tepi kanan / far)">Kanan</button>
           <button type="button" id="wall-auto" data-wall="auto" title="Auto — dinding luar terdekat">Auto</button>
+          <button type="button" id="wall-merintang" data-wall="merintang" title="Merintang: sambung nod kiri ke nod kanan (atas/bawah) supaya dua dinding jadi satu rangka.">Merintang</button>
         </div>
         <label class="adv-toggle" title="Lanjutan: salin setiap lidi ke kedua-dua dinding luar + brace melintang. Lalai MATI.">
           <input type="checkbox" id="chk-mirror" />
@@ -64,7 +65,7 @@ export function mountUI(app: HTMLElement): UIHandles {
     </header>
     <canvas id="game-canvas"></canvas>
     <aside class="result-panel" id="result-panel">
-      <div class="tip">Truss pada lorong 1 dan 7 (tepi). Tengah untuk lalu.</div>
+      <div class="tip">Truss pada lorong 1 dan 7 (tepi). Tengah untuk lalu. Merintang = sambung Kiri↔Kanan.</div>
       <div class="status">Mod: <strong>Bina</strong> — tarik = 1 lidi; klik dua nod = sambung; <strong>+ Base</strong> = 1 lidi penuh / lorong Z.</div>
       <div class="legend">
         <span><i style="background:#43a047"></i>Rendah</span>

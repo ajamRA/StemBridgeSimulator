@@ -3,14 +3,20 @@ import { BASE_RAIL_TARGET, DECK_POINTS, SPAN } from './constants';
 import {
   addArchMember,
   addBaseRail,
+  addMember,
+  addTransverseMember,
   countBaseRails,
   createGridNodes,
+  ensureWallMembersStructural,
   findNodeAt,
+  hasTransverse,
   isAllowedMember,
   isAllowedMemberForLength,
+  membersForSolver,
   nextFreeBaseLane,
   resetMemberIds,
 } from './model';
+import { OUTER_LANE_KANAN, OUTER_LANE_KIRI } from './constants';
 import type { MemberDef, NodeDef } from './types';
 
 describe('isAllowedMember (freer angles / lengths)', () => {
@@ -152,5 +158,98 @@ describe('deck tapak 12×7', () => {
     expect(xs).toHaveLength(DECK_POINTS);
     expect(xs[0]).toBe(0);
     expect(xs[xs.length - 1]).toBe(SPAN);
+  });
+});
+
+describe('through-truss outer lanes', () => {
+  it('outer walls are lanes 0 and 6 (lorong 1 & 7); middle is roadway', async () => {
+    const { OUTER_LANE_KIRI, OUTER_LANE_KANAN, isOuterLane, laneZ, BASE_RAIL_TARGET } =
+      await import('./constants');
+    expect(OUTER_LANE_KIRI).toBe(0);
+    expect(OUTER_LANE_KANAN).toBe(6);
+    expect(BASE_RAIL_TARGET).toBe(7);
+    expect(isOuterLane(0)).toBe(true);
+    expect(isOuterLane(6)).toBe(true);
+    expect(isOuterLane(3)).toBe(false);
+    expect(laneZ(0)).toBeGreaterThan(0);
+    expect(laneZ(6)).toBeLessThan(0);
+  });
+});
+
+
+describe('Merintang transverse members', () => {
+  it('adds a pure cross-brace (same XY) across outer lanes', () => {
+    resetMemberIds();
+    const nodes = createGridNodes();
+    const members: MemberDef[] = [];
+    const n = findNodeAt(nodes, 3, 2)!;
+    const m = addTransverseMember(members, n.id, n.id, OUTER_LANE_KIRI, OUTER_LANE_KANAN);
+    expect(m).not.toBeNull();
+    expect(m!.role).toBe('transverse');
+    expect(m!.zLaneFrom).toBe(0);
+    expect(m!.zLaneTo).toBe(6);
+    expect(hasTransverse(members, n.id, n.id, 0, 6)).toBe(true);
+    // Pure Z brace does not enter planar DSM
+    expect(membersForSolver(nodes, members)).toHaveLength(0);
+  });
+
+  it('skewed transverse enters DSM via XY projection', () => {
+    resetMemberIds();
+    const nodes = createGridNodes();
+    const members: MemberDef[] = [];
+    const a = findNodeAt(nodes, 2, 2)!;
+    const b = findNodeAt(nodes, 3, 2)!;
+    addTransverseMember(members, a.id, b.id, OUTER_LANE_KIRI, OUTER_LANE_KANAN);
+    const structural = membersForSolver(nodes, members);
+    expect(structural).toHaveLength(1);
+    expect(structural[0]!.role).toBe('transverse');
+  });
+
+  it('rejects duplicate transverse on same endpoints/lanes', () => {
+    resetMemberIds();
+    const nodes = createGridNodes();
+    const members: MemberDef[] = [];
+    const n = findNodeAt(nodes, 1, 1)!;
+    expect(addTransverseMember(members, n.id, n.id, 0, 6)).not.toBeNull();
+    expect(addTransverseMember(members, n.id, n.id, 0, 6)).toBeNull();
+  });
+});
+
+describe('dual outer-wall structural (Uji colours both walls)', () => {
+  it('parallel lane0 and lane6 members are both structural (not visualOnly)', () => {
+    resetMemberIds();
+    const nodes = createGridNodes();
+    const members: MemberDef[] = [];
+    const a = findNodeAt(nodes, 0, 0)!;
+    const b = findNodeAt(nodes, 0, 1)!;
+    const m0 = addMember(members, a.id, b.id, { shape: 'lurus', zLane: OUTER_LANE_KIRI });
+    const m6 = addMember(members, a.id, b.id, { shape: 'lurus', zLane: OUTER_LANE_KANAN });
+    expect(m0).not.toBeNull();
+    expect(m6).not.toBeNull();
+    expect(m0!.visualOnly).toBeFalsy();
+    expect(m6!.visualOnly).toBeFalsy();
+    const structural = membersForSolver(nodes, members);
+    expect(structural).toHaveLength(2);
+  });
+
+  it('ensureWallMembersStructural clears legacy visualOnly on side walls', () => {
+    resetMemberIds();
+    const nodes = createGridNodes();
+    const members: MemberDef[] = [];
+    const a = findNodeAt(nodes, 1, 0)!;
+    const b = findNodeAt(nodes, 1, 1)!;
+    addMember(members, a.id, b.id, { shape: 'lurus', zLane: 0 });
+    members.push({
+      id: 99,
+      n1: a.id,
+      n2: b.id,
+      shape: 'lurus',
+      zLane: 6,
+      visualOnly: true,
+    });
+    expect(membersForSolver(nodes, members)).toHaveLength(1);
+    const fixed = ensureWallMembersStructural(members);
+    expect(fixed).toBe(1);
+    expect(membersForSolver(nodes, members)).toHaveLength(2);
   });
 });

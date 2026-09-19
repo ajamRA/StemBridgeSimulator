@@ -53,6 +53,8 @@ The canvas is a real 3D scene — left-drag to orbit, scroll to zoom, right-drag
 - **7 deck lane guides**: outer lanes 1 & 7 (amber) = **dinding truss**; middle 2–6 (blue) = **laluan** (clear roadway).
 - Vertical height snap grids only on outer walls — no mid-plane cage.
 - **Dinding: Kiri / Kanan / Auto** chooses the active side wall for uprights & diagonals.
+- **Merintang** connects Kiri (lane 0) ↔ Kanan (lane 6) with a transverse stick across the roadway — click a node, then the matching/near node (or click the same node twice).
+- Both outer walls are **structural** (Uji paints stress colours on BOTH).
 - Optional **Cermin 3D (lanjutan)** mirrors side-truss to both outer walls — **OFF by default**.
 
 ## How to play
@@ -111,6 +113,6 @@ src/
 ## Known limitations
 
 - Physics is still planar axial DSM; multi-rail base is visual-first (one structural chord).
-- Free nodes live in XY; Z lanes are for base rails only (not full free 3D picking).
+- Free nodes live in XY; Z lanes are for base rails + wall assignment; Merintang spans Z with `zLaneFrom`/`zLaneTo`.
 - Single load point (mid-span deck); no multi-load patterns yet.
 - Progressive failure removes all `u≥1` members each step (no timed animation).

@@ -166,6 +166,10 @@ export class BridgeScene {
     this.wallMode = mode;
     if (mode === 'kiri') this.activeWallLane = OUTER_LANE_KIRI;
     else if (mode === 'kanan') this.activeWallLane = OUTER_LANE_KANAN;
+    else if (mode === 'merintang') {
+      // Both outer walls active for pick/preview; build plane stays mid-span Z=0.
+      this.activeWallLane = OUTER_LANE_KIRI;
+    }
     this.syncBuildPlane();
     this.buildGrid();
   }
@@ -212,8 +216,34 @@ export class BridgeScene {
   }
 
   private syncBuildPlane(): void {
-    const z = laneZ(this.activeWallLane);
+    const z = this.wallMode === 'merintang' ? 0 : laneZ(this.activeWallLane);
     this.buildPlane.set(new THREE.Vector3(0, 0, 1), -z);
+  }
+
+
+  /**
+   * Look up utilization for a member; if missing (legacy visualOnly twin),
+   * copy from a matching XY member that has solver results.
+   */
+  private resultForMember(
+    m: MemberDef,
+    members: MemberDef[],
+    resultMap: Map<number, MemberResult>,
+  ): MemberResult | undefined {
+    const direct = resultMap.get(m.id);
+    if (direct) return direct;
+    // Mirror colours from parallel wall / same-chord structural twin
+    for (const other of members) {
+      if (other.id === m.id) continue;
+      if (other.role === 'transverse') continue;
+      const sameEnds =
+        (other.n1 === m.n1 && other.n2 === m.n2) ||
+        (other.n1 === m.n2 && other.n2 === m.n1);
+      if (!sameEnds) continue;
+      const r = resultMap.get(other.id);
+      if (r) return r;
+    }
+    return undefined;
   }
 
   private wallZsForMember(zLane?: number): number[] {
@@ -225,12 +255,14 @@ export class BridgeScene {
   }
 
   private clearTransverse(): void {
-    for (const [, mesh] of this.transverseMeshes) {
+    // Only clear auto-mirror visuals — keep stored Merintang members.
+    for (const [id, mesh] of this.transverseMeshes) {
+      if (mesh.userData.storedTransverse) continue;
       this.transverseGroup.remove(mesh);
       mesh.geometry.dispose();
       (mesh.material as THREE.Material).dispose();
+      this.transverseMeshes.delete(id);
     }
-    this.transverseMeshes.clear();
   }
 
   private buildGround(): void {
@@ -356,7 +388,10 @@ export class BridgeScene {
     });
     for (const lane of OUTER_LANES) {
       const z = laneZ(lane);
-      const active = lane === this.activeWallLane;
+      const active =
+        this.wallMode === 'merintang'
+          ? true
+          : lane === this.activeWallLane;
       const mat = active ? heightMatActive : heightMatIdle;
       // Vertical guide lines
       const vPts: THREE.Vector3[] = [];
@@ -469,7 +504,7 @@ export class BridgeScene {
 
       // Supports / free joints live on outer walls — never mid-roadway z=0.
       const zs =
-        n.support !== 'none' || this.autoMirrorDepth
+        n.support !== 'none' || this.autoMirrorDepth || this.wallMode === 'merintang'
           ? [laneZ(OUTER_LANE_KIRI), laneZ(OUTER_LANE_KANAN)]
           : [laneZ(this.activeWallLane)];
 
@@ -550,9 +585,9 @@ export class BridgeScene {
       };
 
       let color = g.role === 'base' ? 0xc8a882 : 0xa1887f;
-      // Colour by worst utilization of the two legs
+      // Colour by worst utilization of the two legs (mirror twin if needed)
       for (const leg of g.legs) {
-        const rr = resultMap.get(leg.id);
+        const rr = this.resultForMember(leg, members, resultMap);
         if (rr) {
           color = utilizationColor(rr.utilization);
           if (highlightFailed && rr.failed) color = 0x7f0000;
@@ -603,7 +638,9 @@ export class BridgeScene {
 
     // --- Straight members (skip arch legs — already drawn as smooth tubes) ---
     const straightIds = new Set(
-      members.filter((m) => m.archGroupId == null).map((m) => m.id),
+      members
+        .filter((m) => m.archGroupId == null && m.role !== 'transverse')
+        .map((m) => m.id),
     );
     for (const [id, meshes] of this.memberMeshes) {
       if (!straightIds.has(id)) {
@@ -618,6 +655,7 @@ export class BridgeScene {
 
     for (const m of members) {
       if (m.archGroupId != null) continue;
+      if (m.role === 'transverse') continue; // rendered in syncStoredTransverse
       const a = findNodeById(nodes, m.n1)!;
       const b = findNodeById(nodes, m.n2)!;
       const L = memberLength(nodes, m);
@@ -626,7 +664,7 @@ export class BridgeScene {
       const angle = Math.atan2(b.y - a.y, b.x - a.x);
 
       let color = m.role === 'base' ? 0xc8a882 : 0xa1887f;
-      const r = resultMap.get(m.id);
+      const r = this.resultForMember(m, members, resultMap);
       if (r) {
         color = utilizationColor(r.utilization);
         if (highlightFailed && r.failed) color = 0x7f0000;
@@ -670,7 +708,82 @@ export class BridgeScene {
     }
 
     void archLegIds;
+    this.syncStoredTransverse(nodes, members, resultMap, highlightFailed);
     this.syncTransverse(nodes, members);
+  }
+
+  /**
+   * Stored Merintang members: cylinder from (x1,y1,zFrom) → (x2,y2,zTo).
+   * Keyed in transverseMeshes with negative ids to avoid clashing with auto-mirror.
+   */
+  private syncStoredTransverse(
+    nodes: NodeDef[],
+    members: MemberDef[],
+    resultMap: Map<number, MemberResult>,
+    highlightFailed: boolean,
+  ): void {
+    const live = new Set<number>();
+    for (const m of members) {
+      if (m.role !== 'transverse') continue;
+      if (m.zLaneFrom == null || m.zLaneTo == null) continue;
+      const a = findNodeById(nodes, m.n1);
+      const b = findNodeById(nodes, m.n2);
+      if (!a || !b) continue;
+      live.add(m.id);
+
+      const z0 = laneZ(m.zLaneFrom);
+      const z1 = laneZ(m.zLaneTo);
+      const p0 = new THREE.Vector3(a.x, a.y, z0);
+      const p1 = new THREE.Vector3(b.x, b.y, z1);
+      const mid = new THREE.Vector3().addVectors(p0, p1).multiplyScalar(0.5);
+      const dir = new THREE.Vector3().subVectors(p1, p0);
+      const L = dir.length();
+      if (L < 1e-9) continue;
+
+      let color = 0x8d6e63;
+      const rr = resultMap.get(m.id);
+      if (rr) {
+        color = utilizationColor(rr.utilization);
+        if (highlightFailed && rr.failed) color = 0x7f0000;
+      }
+
+      let mesh = this.transverseMeshes.get(m.id);
+      if (!mesh) {
+        const geo = new THREE.CylinderGeometry(
+          TRANSVERSE_RADIUS,
+          TRANSVERSE_RADIUS,
+          1,
+          8,
+        );
+        // Default cylinder is Y-up; orient via quaternion below.
+        const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
+        mesh = new THREE.Mesh(geo, mat);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.userData.memberId = m.id;
+        mesh.userData.storedTransverse = true;
+        this.transverseGroup.add(mesh);
+        this.transverseMeshes.set(m.id, mesh);
+      }
+
+      mesh.scale.set(1, L, 1);
+      mesh.position.copy(mid);
+      mesh.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0),
+        dir.clone().normalize(),
+      );
+      (mesh.material as THREE.MeshStandardMaterial).color.setHex(color);
+    }
+
+    for (const [id, mesh] of this.transverseMeshes) {
+      if (!mesh.userData.storedTransverse) continue;
+      if (!live.has(id)) {
+        this.transverseGroup.remove(mesh);
+        mesh.geometry.dispose();
+        (mesh.material as THREE.Material).dispose();
+        this.transverseMeshes.delete(id);
+      }
+    }
   }
 
   /**
@@ -693,8 +806,12 @@ export class BridgeScene {
       if (n.support !== 'none') used.add(n.id);
     }
 
+    const autoKey = (nid: number) => -(nid + 1); // negative keys — never clash with member ids
+
     for (const [id, mesh] of this.transverseMeshes) {
-      if (!used.has(id)) {
+      if (mesh.userData.storedTransverse) continue;
+      const nid = -id - 1;
+      if (!used.has(nid)) {
         this.transverseGroup.remove(mesh);
         mesh.geometry.dispose();
         (mesh.material as THREE.Material).dispose();
@@ -706,8 +823,9 @@ export class BridgeScene {
     for (const id of used) {
       const n = findNodeById(nodes, id);
       if (!n) continue;
+      const key = autoKey(id);
 
-      let mesh = this.transverseMeshes.get(id);
+      let mesh = this.transverseMeshes.get(key);
       if (!mesh) {
         const geo = new THREE.CylinderGeometry(
           TRANSVERSE_RADIUS,
@@ -722,8 +840,9 @@ export class BridgeScene {
         });
         mesh = new THREE.Mesh(geo, mat);
         mesh.castShadow = true;
+        mesh.userData.autoMirrorTransverse = true;
         this.transverseGroup.add(mesh);
-        this.transverseMeshes.set(id, mesh);
+        this.transverseMeshes.set(key, mesh);
       }
 
       mesh.scale.set(1, 1, depth);
@@ -736,11 +855,15 @@ export class BridgeScene {
     to: Vec2 | null,
     valid: boolean,
     curved = false,
+    opts?: { transverse?: boolean },
   ): void {
     while (this.previewGroup.children.length) {
       const c = this.previewGroup.children[0]!;
       this.previewGroup.remove(c);
       if (c instanceof THREE.Line) {
+        c.geometry.dispose();
+        (c.material as THREE.Material).dispose();
+      } else if (c instanceof THREE.Mesh) {
         c.geometry.dispose();
         (c.material as THREE.Material).dispose();
       }
@@ -749,6 +872,17 @@ export class BridgeScene {
 
     const color = valid ? 0x4fc3f7 : 0xef5350;
     const mat = new THREE.LineBasicMaterial({ color });
+
+    // Merintang: preview line across the roadway gap in Z
+    if (opts?.transverse || this.wallMode === 'merintang') {
+      const pts = [
+        new THREE.Vector3(from.x, from.y, laneZ(OUTER_LANE_KIRI)),
+        new THREE.Vector3(to.x, to.y, laneZ(OUTER_LANE_KANAN)),
+      ];
+      const geo = new THREE.BufferGeometry().setFromPoints(pts);
+      this.previewGroup.add(new THREE.Line(geo, mat));
+      return;
+    }
 
     const mx = (from.x + to.x) / 2;
     const my = (from.y + to.y) / 2;
