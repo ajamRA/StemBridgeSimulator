@@ -280,3 +280,29 @@ button.accent:disabled {
   color: #042f4a;
   background: var(--ok);
 }
+
+.adv-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  min-height: 40px;
+}
+
+.adv-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.adv-toggle:has(input:checked) {
+  color: var(--text);
+  outline: 1px solid var(--accent);
+}

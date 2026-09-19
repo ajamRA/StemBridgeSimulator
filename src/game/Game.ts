@@ -58,7 +58,7 @@ import * as THREE from 'three';
 const CLICK_SLOP_PX = 6;
 
 const TIP_MS =
-  'Susun 7 lidi panjang sebagai base, kemudian brace dengan pendek. Klik kosong = nod baharu (soft snap); + Base = 1 lidi penuh merentangi span.';
+  'Tarik untuk letak satu lidi. Tiada kotak automatik. + Base = 1 lidi penuh pada lorong Z seterusnya (×7 untuk 7 lidi selari).';
 
 interface BuildSnapshot {
   members: MemberDef[];
@@ -147,6 +147,18 @@ export class Game {
     this.ui.btnUndo.addEventListener('click', () => this.undo());
     this.ui.btnReset.addEventListener('click', () => this.reset());
     this.ui.btnBase.addEventListener('click', () => this.placeBaseRail());
+    this.ui.chkMirror.addEventListener('change', () => {
+      const on = this.ui.chkMirror.checked;
+      this.scene.setAutoMirrorDepth(on);
+      this.refreshNodes();
+      this.syncScene();
+      this.flash(
+        on
+          ? 'Cermin 3D HIDUP — setiap lidi digandakan near+far + brace melintang (kotak).'
+          : 'Cermin 3D MATI — satu tarikan = satu lidi sahaja.',
+        on ? 'warn' : 'ok',
+      );
+    });
     this.ui.loadSlider.addEventListener('input', () => {
       this.loadMagnitude = Number(this.ui.loadSlider.value);
       this.ui.loadVal.textContent = String(this.loadMagnitude);
@@ -613,7 +625,7 @@ export class Game {
     if (mode === 'bina') {
       this.invalidateTest();
       this.flash(
-        'Mod Bina — klik kosong = nod; dua nod = sambung; + Base = lidi penuh span.',
+        'Mod Bina — tarik = 1 lidi; dua nod = sambung; + Base = 1 lidi penuh lorong Z.',
         '',
       );
     } else if (mode === 'padam') {
@@ -794,7 +806,7 @@ export class Game {
 
   private showIdleTip(): void {
     this.flash(
-      'Susun 7 lidi panjang sebagai base (+ Base), kemudian brace dengan pendek. Klik kosong = nod baharu.',
+      'Tarik untuk letak satu lidi. Tiada kotak automatik. Atau + Base ×7 untuk lidi panjang selari.',
       '',
     );
   }

@@ -39,14 +39,15 @@ Matches a real popsicle-stick / lidi challenge (reference patterns A–J):
 4. Optional: click empty space to place a **free joint** (soft grid magnet), then connect two nodes with Lurus / Lengkung.
 5. **Uji** — DSM stress colours; overstressed sticks fail progressively.
 
-Tip shown in-app: *“Susun 7 lidi panjang sebagai base, kemudian brace dengan pendek.”*
+Tip shown in-app: *“Tarik untuk letak satu lidi. Tiada kotak automatik.”*
 
 ## 3D view
 
 The canvas is a real 3D scene — left-drag to orbit, scroll to zoom, right-drag (or Shift+left-drag) to pan.
 
+- **Default: one drag / placement = one stick** (single cylinder). No automatic box / dual-side mirror / cross braces.
 - **7 green deck lane guides** show where parallel base rails sit (Z lanes 0…6).
-- Side-truss sticks still render on near/far faces with light transverse braces.
+- Optional advanced checkbox **Cermin 3D (lanjutan)** restores near/far mirroring + transverse braces (classroom “depth” box look) — **OFF by default**.
 - Soft magnet dots on the mid plane; free joints appear teal.
 
 ## How to play

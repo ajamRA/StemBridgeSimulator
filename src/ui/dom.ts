@@ -11,6 +11,8 @@ export interface UIHandles {
   btnUndo: HTMLButtonElement;
   btnReset: HTMLButtonElement;
   btnBase: HTMLButtonElement;
+  /** Advanced: near/far mirror + transverse braces (default OFF). */
+  chkMirror: HTMLInputElement;
   baseCounter: HTMLElement;
   loadSlider: HTMLInputElement;
   loadVal: HTMLElement;
@@ -48,12 +50,16 @@ export function mountUI(app: HTMLElement): UIHandles {
           <button type="button" id="shape-lurus" data-shape="lurus" class="active" title="Lidi lurus (1 ahli)">Lurus</button>
           <button type="button" id="shape-lengkung" data-shape="lengkung" title="Busur: nod puncak + 2 ahli axial">Lengkung</button>
         </div>
+        <label class="adv-toggle" title="Lanjutan: salin setiap lidi ke muka near+far dan tambah brace melintang (nampak kotak). Lalai MATI.">
+          <input type="checkbox" id="chk-mirror" />
+          <span>Cermin 3D (lanjutan)</span>
+        </label>
       </div>
     </header>
     <canvas id="game-canvas"></canvas>
     <aside class="result-panel" id="result-panel">
-      <div class="tip">Susun 7 lidi panjang sebagai base, kemudian brace dengan pendek.</div>
-      <div class="status">Mod: <strong>Bina</strong> — klik kosong = nod baharu (soft snap); klik dua nod = sambung. Atau tekan <strong>+ Base</strong>.</div>
+      <div class="tip">Tarik untuk letak satu lidi. Tiada kotak automatik.</div>
+      <div class="status">Mod: <strong>Bina</strong> — tarik = 1 lidi; klik dua nod = sambung; <strong>+ Base</strong> = 1 lidi penuh pada lorong Z seterusnya.</div>
       <div class="legend">
         <span><i style="background:#43a047"></i>Rendah</span>
         <span><i style="background:#fdd835"></i>Sederhana</span>
@@ -73,6 +79,7 @@ export function mountUI(app: HTMLElement): UIHandles {
     btnUndo: app.querySelector('#btn-undo')!,
     btnReset: app.querySelector('#btn-reset')!,
     btnBase: app.querySelector('#btn-base')!,
+    chkMirror: app.querySelector('#chk-mirror')!,
     baseCounter: app.querySelector('#base-counter')!,
     loadSlider: app.querySelector('#beban')!,
     loadVal: app.querySelector('#beban-val')!,

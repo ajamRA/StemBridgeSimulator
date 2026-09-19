@@ -4,7 +4,10 @@
  * PHYSICS NOTE (MVP): Direct Stiffness Method remains 2D axial-only on the
  * primary XY truss. Deck base rails use Z lanes (up to 7 parallel lidi panjang);
  * only the first structural base chord enters the DSM — extra lanes are visual.
- * Side-truss members still auto-mirror to near/far planes for classroom depth.
+ *
+ * DEFAULT UX: one placed member = one cylinder (mid-plane / its Z lane).
+ * Optional advanced "auto-mirror depth" duplicates side-truss sticks to
+ * near+far and adds transverse braces (creates a box look) — OFF by default.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -49,6 +52,8 @@ export class BridgeScene {
   private memberMeshes = new Map<number, THREE.Mesh[]>();
   private nodeMeshes = new Map<number, THREE.Mesh[]>();
   private transverseMeshes = new Map<number, THREE.Mesh>();
+  /** Advanced: duplicate side-truss to near/far + transverse braces. Default OFF. */
+  private autoMirrorDepth = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -130,6 +135,28 @@ export class BridgeScene {
 
   setOrbitEnabled(enabled: boolean): void {
     this.controls.enabled = enabled;
+  }
+
+  /**
+   * When true, non-base members render on near+far planes and syncTransverse
+   * adds cross connectors (box look). Default false = one stick only.
+   */
+  setAutoMirrorDepth(enabled: boolean): void {
+    this.autoMirrorDepth = enabled;
+    if (!enabled) this.clearTransverse();
+  }
+
+  getAutoMirrorDepth(): boolean {
+    return this.autoMirrorDepth;
+  }
+
+  private clearTransverse(): void {
+    for (const [, mesh] of this.transverseMeshes) {
+      this.transverseGroup.remove(mesh);
+      mesh.geometry.dispose();
+      (mesh.material as THREE.Material).dispose();
+    }
+    this.transverseMeshes.clear();
   }
 
   private buildGround(): void {
@@ -302,9 +329,9 @@ export class BridgeScene {
       const meshes: THREE.Mesh[] = [];
       const r = n.isApex ? NODE_RADIUS * 0.75 : n.isFree ? NODE_RADIUS * 0.85 : NODE_RADIUS;
 
-      // Supports + free joints: show on mid + both faces; grid magnets lighter on mid
+      // Default: single mid-plane joint. Advanced mirror: also show near/far faces.
       const zs =
-        n.support !== 'none' || n.isFree || n.isApex
+        this.autoMirrorDepth && (n.support !== 'none' || n.isFree || n.isApex)
           ? [0, Z_NEAR * 0.85, Z_FAR * 0.85]
           : [0];
 
@@ -362,9 +389,12 @@ export class BridgeScene {
       }
 
       const isBase = m.role === 'base' && m.zLane != null;
+      // Base: its Z lane only. Normal: mid-plane unless advanced auto-mirror.
       const zs = isBase
         ? [laneZ(m.zLane!)]
-        : [Z_NEAR, Z_FAR];
+        : this.autoMirrorDepth
+          ? [Z_NEAR, Z_FAR]
+          : [0];
       const radius = isBase ? BASE_RADIUS : MEMBER_RADIUS;
 
       let meshes = this.memberMeshes.get(m.id);
@@ -406,8 +436,13 @@ export class BridgeScene {
   /**
    * Visual-only near↔far connectors at nodes that participate in side-truss
    * members (not base-only). Never enters the 2D members list.
+   * Gated by autoMirrorDepth — OFF by default so one stick ≠ kotak.
    */
   private syncTransverse(nodes: NodeDef[], members: MemberDef[]): void {
+    if (!this.autoMirrorDepth) {
+      this.clearTransverse();
+      return;
+    }
     const used = new Set<number>();
     for (const m of members) {
       if (m.role === 'base') continue;
@@ -492,7 +527,9 @@ export class BridgeScene {
         ? { x: mx, y: my + rise }
         : { x: mx + px * rise, y: my + py * rise };
 
-    for (const z of [Z_NEAR, Z_FAR, 0]) {
+    // Single stick preview by default; advanced mirror shows near+far+mid.
+    const previewZs = this.autoMirrorDepth ? [Z_NEAR, Z_FAR, 0] : [0];
+    for (const z of previewZs) {
       let pts: THREE.Vector3[];
       if (curved) {
         pts = [];
@@ -528,7 +565,8 @@ export class BridgeScene {
 
     const len = 0.4 + Math.min(magnitude / 40, 1.2);
     const mat = new THREE.MeshStandardMaterial({ color: 0xef5350 });
-    for (const z of [0, Z_NEAR * 0.5, Z_FAR * 0.5]) {
+    const loadZs = this.autoMirrorDepth ? [0, Z_NEAR * 0.5, Z_FAR * 0.5] : [0];
+    for (const z of loadZs) {
       const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, len, 8), mat);
       shaft.position.set(node.x, node.y - len / 2 - 0.2, z);
       shaft.castShadow = true;
