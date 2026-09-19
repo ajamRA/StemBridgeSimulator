@@ -196,6 +196,7 @@ export class Game {
     this.ui.loadSlider.addEventListener('input', () => {
       this.loadMagnitude = Number(this.ui.loadSlider.value);
       this.ui.loadVal.textContent = String(this.loadMagnitude);
+      this.ui.loadSlider.setAttribute('aria-valuenow', String(this.loadMagnitude));
       this.invalidateTest();
       this.updateLoadArrow();
     });
@@ -1116,14 +1117,9 @@ export class Game {
 
   private onResize(): void {
     const canvas = this.ui.canvas;
-    const parent = canvas.parentElement!;
-    const toolbar = this.ui.root.querySelector('.toolbar') as HTMLElement;
-    const panel = this.ui.resultPanel;
-    const w = parent.clientWidth;
-    const h = Math.max(
-      200,
-      parent.clientHeight - toolbar.offsetHeight - panel.offsetHeight,
-    );
+    const wrap = this.ui.canvasWrap;
+    const w = Math.max(1, wrap.clientWidth);
+    const h = Math.max(200, wrap.clientHeight);
     const pr = Math.min(devicePixelRatio, 2);
     canvas.width = Math.floor(w * pr);
     canvas.height = Math.floor(h * pr);

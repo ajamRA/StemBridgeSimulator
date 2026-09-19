@@ -17,6 +17,7 @@
     "vitest": "^2.1.9"
   },
   "dependencies": {
+    "@hugeicons/core-free-icons": "^4.3.4",
     "three": "^0.186.0"
   }
 }
