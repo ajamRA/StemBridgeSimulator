@@ -5,9 +5,10 @@
  * primary XY truss. Deck base rails use Z lanes (up to 7 parallel lidi panjang);
  * only the first structural base chord enters the DSM — extra lanes are visual.
  *
- * DEFAULT UX: one placed member = one cylinder (mid-plane / its Z lane).
+ * DEFAULT UX: one placed member = one cylinder on the active outer wall
+ * (lane 0 Kiri / lane 6 Kanan). Middle lanes stay clear roadway.
  * Optional advanced "auto-mirror depth" duplicates side-truss sticks to
- * near+far and adds transverse braces (creates a box look) — OFF by default.
+ * both outer walls + transverse braces — OFF by default.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -17,9 +18,14 @@ import {
   GRID,
   laneZ,
   MAX_HEIGHT,
+  OUTER_LANE_KANAN,
+  OUTER_LANE_KIRI,
+  OUTER_LANES,
+  isOuterLane,
   SPAN,
   TRUSS_HALF_DEPTH,
 } from '../engine/constants';
+import type { WallMode } from '../engine/types';
 import { findNodeById, memberLength } from '../engine/model';
 import { utilizationColor } from '../engine/solver';
 import type { MemberDef, MemberResult, NodeDef, Vec2 } from '../engine/types';
@@ -47,16 +53,19 @@ export class BridgeScene {
   private groundMesh: THREE.Mesh | null = null;
   private raycaster = new THREE.Raycaster();
   private pointer = new THREE.Vector2();
-  /** Mid build plane (z=0) — picking projects to XY. */
-  private buildPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+  /** Active outer-wall build plane — picking projects to that wall's XY. */
+  private buildPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -laneZ(OUTER_LANE_KIRI));
 
   private memberMeshes = new Map<number, THREE.Mesh[]>();
   /** Smooth Lengkung tubes keyed by archGroupId (legs stay in members for DSM). */
   private archMeshes = new Map<number, THREE.Mesh[]>();
   private nodeMeshes = new Map<number, THREE.Mesh[]>();
   private transverseMeshes = new Map<number, THREE.Mesh>();
-  /** Advanced: duplicate side-truss to near/far + transverse braces. Default OFF. */
+  /** Advanced: duplicate side-truss to both outer walls + transverse braces. Default OFF. */
   private autoMirrorDepth = false;
+  /** Through-truss side: kiri=lane0, kanan=lane6, auto=nearest outer. */
+  private wallMode: WallMode = 'kiri';
+  private activeWallLane: number = OUTER_LANE_KIRI;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -153,6 +162,68 @@ export class BridgeScene {
     return this.autoMirrorDepth;
   }
 
+  setWallMode(mode: WallMode): void {
+    this.wallMode = mode;
+    if (mode === 'kiri') this.activeWallLane = OUTER_LANE_KIRI;
+    else if (mode === 'kanan') this.activeWallLane = OUTER_LANE_KANAN;
+    this.syncBuildPlane();
+    this.buildGrid();
+  }
+
+  getWallMode(): WallMode {
+    return this.wallMode;
+  }
+
+  getActiveWallLane(): number {
+    return this.activeWallLane;
+  }
+
+  /** Resolve Auto wall from a client ray; also refreshes build plane. */
+  resolveWallFromClient(clientX: number, clientY: number, rect: DOMRect): number {
+    if (this.wallMode !== 'auto') {
+      this.syncBuildPlane();
+      return this.activeWallLane;
+    }
+    this.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    this.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    let bestLane = this.activeWallLane;
+    let bestAbs = Infinity;
+    for (const lane of OUTER_LANES) {
+      const z = laneZ(lane);
+      const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -z);
+      const hit = new THREE.Vector3();
+      if (this.raycaster.ray.intersectPlane(plane, hit)) {
+        const d = this.raycaster.ray.origin.distanceTo(hit);
+        if (d < bestAbs) {
+          bestAbs = d;
+          bestLane = lane;
+        }
+      }
+    }
+    if (bestLane !== this.activeWallLane) {
+      this.activeWallLane = bestLane;
+      this.syncBuildPlane();
+      this.buildGrid();
+    } else {
+      this.syncBuildPlane();
+    }
+    return bestLane;
+  }
+
+  private syncBuildPlane(): void {
+    const z = laneZ(this.activeWallLane);
+    this.buildPlane.set(new THREE.Vector3(0, 0, 1), -z);
+  }
+
+  private wallZsForMember(zLane?: number): number[] {
+    if (this.autoMirrorDepth) {
+      return [laneZ(OUTER_LANE_KIRI), laneZ(OUTER_LANE_KANAN)];
+    }
+    const lane = zLane != null && isOuterLane(zLane) ? zLane : this.activeWallLane;
+    return [laneZ(lane)];
+  }
+
   private clearTransverse(): void {
     for (const [, mesh] of this.transverseMeshes) {
       this.transverseGroup.remove(mesh);
@@ -200,65 +271,127 @@ export class BridgeScene {
       }
     }
 
-    // Flat tapak: 7 parallel deck lines × 12 points (no tall Y cage)
-    const laneMat = new THREE.LineBasicMaterial({
-      color: 0x81c784,
-      transparent: true,
-      opacity: 0.55,
-    });
-    const lanePts: THREE.Vector3[] = [];
+    // Deck roadway: 7 parallel base lines (middle = laluan, outer = dinding)
+    const roadPts: THREE.Vector3[] = [];
+    const wallPts: THREE.Vector3[] = [];
     for (let lane = 0; lane < BASE_RAIL_TARGET; lane++) {
       const z = laneZ(lane);
-      lanePts.push(new THREE.Vector3(0, 0.02, z));
-      lanePts.push(new THREE.Vector3(SPAN * GRID, 0.02, z));
+      const pair = [
+        new THREE.Vector3(0, 0.02, z),
+        new THREE.Vector3(SPAN * GRID, 0.02, z),
+      ];
+      if (isOuterLane(lane)) wallPts.push(...pair);
+      else roadPts.push(...pair);
     }
     this.gridGroup.add(
-      new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(lanePts), laneMat),
+      new THREE.LineSegments(
+        new THREE.BufferGeometry().setFromPoints(roadPts),
+        new THREE.LineBasicMaterial({
+          color: 0x90caf9,
+          transparent: true,
+          opacity: 0.4,
+        }),
+      ),
+    );
+    this.gridGroup.add(
+      new THREE.LineSegments(
+        new THREE.BufferGeometry().setFromPoints(wallPts),
+        new THREE.LineBasicMaterial({
+          color: 0xffb74d,
+          transparent: true,
+          opacity: 0.75,
+        }),
+      ),
     );
 
-    // Visible 12×7 deck magnets (pickable via XY snap to same x)
-    const magnetGeo = new THREE.SphereGeometry(0.085, 10, 10);
-    const magnetMat = new THREE.MeshStandardMaterial({
-      color: 0xc8e6c9,
-      emissive: 0x1b5e20,
-      emissiveIntensity: 0.15,
+    // 12×7 deck magnets — outer lanes "dinding truss", middle "laluan"
+    const magnetGeo = new THREE.SphereGeometry(0.08, 10, 10);
+    const roadMat = new THREE.MeshStandardMaterial({
+      color: 0xbbdefb,
+      emissive: 0x1565c0,
+      emissiveIntensity: 0.08,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.7,
       roughness: 0.55,
+    });
+    const wallDeckMat = new THREE.MeshStandardMaterial({
+      color: 0xffe0b2,
+      emissive: 0xe65100,
+      emissiveIntensity: 0.18,
+      transparent: true,
+      opacity: 0.95,
+      roughness: 0.5,
     });
     for (let xi = 0; xi < DECK_POINTS; xi++) {
       const x = xi * GRID;
       for (let lane = 0; lane < BASE_RAIL_TARGET; lane++) {
-        const mesh = new THREE.Mesh(magnetGeo, magnetMat);
+        const outer = isOuterLane(lane);
+        const mesh = new THREE.Mesh(magnetGeo, outer ? wallDeckMat : roadMat);
         mesh.position.set(x, 0.04, laneZ(lane));
         mesh.userData.deckMagnet = true;
         mesh.userData.xIndex = xi;
         mesh.userData.zLane = lane;
+        mesh.userData.laneRole = outer ? 'dinding' : 'laluan';
         this.gridGroup.add(mesh);
       }
     }
 
-    // Subtle optional brace level (y=MAX_HEIGHT) — mid-plane only, not dominating
-    if (MAX_HEIGHT > 0) {
-      const upperPts: THREE.Vector3[] = [];
+    // Vertical snap grids / height points ONLY on outer walls (no mid-plane cage)
+    const heightGeo = new THREE.SphereGeometry(0.07, 10, 10);
+    const heightMatIdle = new THREE.MeshStandardMaterial({
+      color: 0xffcc80,
+      emissive: 0xbf360c,
+      emissiveIntensity: 0.12,
+      transparent: true,
+      opacity: 0.85,
+      roughness: 0.5,
+    });
+    const heightMatActive = new THREE.MeshStandardMaterial({
+      color: 0xfff176,
+      emissive: 0xf57f17,
+      emissiveIntensity: 0.35,
+      transparent: true,
+      opacity: 0.98,
+      roughness: 0.4,
+    });
+    for (const lane of OUTER_LANES) {
+      const z = laneZ(lane);
+      const active = lane === this.activeWallLane;
+      const mat = active ? heightMatActive : heightMatIdle;
+      // Vertical guide lines
+      const vPts: THREE.Vector3[] = [];
       for (let xi = 0; xi < DECK_POINTS; xi++) {
         const x = xi * GRID;
-        const s = 0.05;
-        upperPts.push(new THREE.Vector3(x - s, MAX_HEIGHT * GRID, 0));
-        upperPts.push(new THREE.Vector3(x + s, MAX_HEIGHT * GRID, 0));
-        upperPts.push(new THREE.Vector3(x, MAX_HEIGHT * GRID - s, 0));
-        upperPts.push(new THREE.Vector3(x, MAX_HEIGHT * GRID + s, 0));
+        vPts.push(new THREE.Vector3(x, 0, z));
+        vPts.push(new THREE.Vector3(x, MAX_HEIGHT * GRID, z));
+      }
+      // Horizontal levels on this wall
+      for (let yi = 1; yi <= MAX_HEIGHT; yi++) {
+        const y = yi * GRID;
+        vPts.push(new THREE.Vector3(0, y, z));
+        vPts.push(new THREE.Vector3(SPAN * GRID, y, z));
       }
       this.gridGroup.add(
         new THREE.LineSegments(
-          new THREE.BufferGeometry().setFromPoints(upperPts),
+          new THREE.BufferGeometry().setFromPoints(vPts),
           new THREE.LineBasicMaterial({
-            color: 0x5a6a7c,
+            color: active ? 0xffee58 : 0xffa726,
             transparent: true,
-            opacity: 0.22,
+            opacity: active ? 0.55 : 0.28,
           }),
         ),
       );
+      for (let yi = 1; yi <= MAX_HEIGHT; yi++) {
+        const y = yi * GRID;
+        for (let xi = 0; xi < DECK_POINTS; xi++) {
+          const mesh = new THREE.Mesh(heightGeo, mat);
+          mesh.position.set(xi * GRID, y, z);
+          mesh.userData.wallMagnet = true;
+          mesh.userData.zLane = lane;
+          mesh.userData.yIndex = yi;
+          this.gridGroup.add(mesh);
+        }
+      }
     }
   }
 
@@ -321,8 +454,10 @@ export class BridgeScene {
     for (const n of nodes) {
       // Apex is physics-only (Lengkung legs); visible stick is a smooth tube.
       if (n.isApex) continue;
-      // Deck magnets (12×7) already drawn in buildGrid — skip duplicate deck spheres.
+      // Deck + wall height magnets already drawn in buildGrid.
       if (n.isDeck && !n.isFree && n.support === 'none') continue;
+      // Fixed upper grid joints are visual magnets on outer walls only.
+      if (!n.isFree && !n.isApex && n.support === 'none' && !n.isDeck) continue;
 
       let color = 0xb0bec5;
       if (n.support === 'pin') color = 0xffca28;
@@ -332,10 +467,11 @@ export class BridgeScene {
       const meshes: THREE.Mesh[] = [];
       const r = n.isFree ? NODE_RADIUS * 0.85 : NODE_RADIUS * 1.05;
 
+      // Supports / free joints live on outer walls — never mid-roadway z=0.
       const zs =
-        this.autoMirrorDepth && (n.support !== 'none' || n.isFree)
-          ? [0, Z_NEAR * 0.85, Z_FAR * 0.85]
-          : [0];
+        n.support !== 'none' || this.autoMirrorDepth
+          ? [laneZ(OUTER_LANE_KIRI), laneZ(OUTER_LANE_KANAN)]
+          : [laneZ(this.activeWallLane)];
 
       for (const z of zs) {
         const geo = new THREE.SphereGeometry(r, 12, 12);
@@ -424,11 +560,7 @@ export class BridgeScene {
       }
 
       const isBase = g.role === 'base' && g.zLane != null;
-      const zs = isBase
-        ? [laneZ(g.zLane!)]
-        : this.autoMirrorDepth
-          ? [Z_NEAR, Z_FAR]
-          : [0];
+      const zs = isBase ? [laneZ(g.zLane!)] : this.wallZsForMember(g.zLane);
       const radius = isBase ? BASE_RADIUS : MEMBER_RADIUS;
 
       let meshes = this.archMeshes.get(gid);
@@ -501,11 +633,7 @@ export class BridgeScene {
       }
 
       const isBase = m.role === 'base' && m.zLane != null;
-      const zs = isBase
-        ? [laneZ(m.zLane!)]
-        : this.autoMirrorDepth
-          ? [Z_NEAR, Z_FAR]
-          : [0];
+      const zs = isBase ? [laneZ(m.zLane!)] : this.wallZsForMember(m.zLane);
       const radius = isBase ? BASE_RADIUS : MEMBER_RADIUS;
 
       let meshes = this.memberMeshes.get(m.id);
@@ -639,8 +767,8 @@ export class BridgeScene {
         ? { x: mx, y: my + rise }
         : { x: mx + px * rise, y: my + py * rise };
 
-    // Single stick preview by default; advanced mirror shows near+far+mid.
-    const previewZs = this.autoMirrorDepth ? [Z_NEAR, Z_FAR, 0] : [0];
+    // Single stick on active outer wall; advanced mirror shows both walls.
+    const previewZs = this.wallZsForMember(this.activeWallLane);
     for (const z of previewZs) {
       let pts: THREE.Vector3[];
       if (curved) {
@@ -677,7 +805,9 @@ export class BridgeScene {
 
     const len = 0.4 + Math.min(magnitude / 40, 1.2);
     const mat = new THREE.MeshStandardMaterial({ color: 0xef5350 });
-    const loadZs = this.autoMirrorDepth ? [0, Z_NEAR * 0.5, Z_FAR * 0.5] : [0];
+    const loadZs = this.autoMirrorDepth
+      ? [0, laneZ(OUTER_LANE_KIRI) * 0.5, laneZ(OUTER_LANE_KANAN) * 0.5]
+      : [0];
     for (const z of loadZs) {
       const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, len, 8), mat);
       shaft.position.set(node.x, node.y - len / 2 - 0.2, z);
@@ -715,7 +845,7 @@ export class BridgeScene {
       opacity: 0.55,
     });
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(pos.x, pos.y, 0);
+    mesh.position.set(pos.x, pos.y, laneZ(this.activeWallLane));
     mesh.userData.ghost = true;
     this.previewGroup.add(mesh);
   }

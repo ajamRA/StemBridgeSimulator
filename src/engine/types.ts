@@ -46,8 +46,9 @@ export interface MemberDef {
   /** Deck base rail (full-span lidi panjang) vs normal brace/chord. */
   role?: MemberRole;
   /**
-   * Parallel deck lane index 0..BASE_RAIL_TARGET-1 for base rails.
-   * Side-truss members omit this and render on near/far planes.
+   * Z lane index 0..BASE_RAIL_TARGET-1.
+   * Base rails use any deck lane; side-truss uprights/diagonals use outer
+   * lanes only (0 = Kiri, last = Kanan) so the middle roadway stays clear.
    */
   zLane?: number;
 }
@@ -72,3 +73,6 @@ export interface SolveResult {
 }
 
 export type GameMode = 'bina' | 'uji' | 'padam';
+
+/** Active through-truss side wall for build/snap. */
+export type WallMode = 'kiri' | 'kanan' | 'auto';

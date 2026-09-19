@@ -2,6 +2,8 @@ import {
   BASE_RAIL_TARGET,
   DEFAULT_LOAD,
   NODE_PICK_RADIUS,
+  OUTER_LANE_KANAN,
+  OUTER_LANE_KIRI,
   SOFT_SNAP,
 } from '../engine/constants';
 import { progressiveFailure } from '../engine/failure';
@@ -40,6 +42,7 @@ import type {
   StickLengthPreset,
   StickShape,
   Vec2,
+  WallMode,
 } from '../engine/types';
 import { createLevelState, defaultLevel } from '../levels';
 import { BridgeScene } from '../scene/BridgeScene';
@@ -49,6 +52,7 @@ import {
   setActiveLength,
   setActiveMode,
   setActiveShape,
+  setActiveWall,
   setBaseCounter,
   type UIHandles,
 } from '../ui/dom';
@@ -58,7 +62,7 @@ import * as THREE from 'three';
 const CLICK_SLOP_PX = 6;
 
 const TIP_MS =
-  'Tarik = 1 lidi (tiada kotak auto). + Base = 1 lidi/lorong — ulang hingga 7. Uji tunjuk lidi yang patah.';
+  'Truss pada lorong 1 dan 7 (tepi). Tengah untuk lalu. Tarik = 1 lidi; + Base = 1 lorong; Uji tunjuk patah.';
 
 interface BuildSnapshot {
   members: MemberDef[];
@@ -86,6 +90,7 @@ export class Game {
   /** Default Panjang for base-first classroom workflow. */
   private selectedLength: StickLengthPreset = 'panjang';
   private selectedShape: StickShape = 'lurus';
+  private wallMode: WallMode = 'kiri';
 
   private dragFrom: NodeDef | null = null;
   private pointerDown = false;
@@ -110,6 +115,8 @@ export class Game {
 
     setActiveLength(this.ui, this.selectedLength);
     setActiveShape(this.ui, this.selectedShape);
+    setActiveWall(this.ui, this.wallMode);
+    this.scene.setWallMode(this.wallMode);
 
     this.refreshNodes();
     this.syncScene();
@@ -197,6 +204,23 @@ export class Game {
       });
     }
 
+    for (const btn of this.ui.wallButtons) {
+      btn.addEventListener('click', () => {
+        const raw = btn.dataset.wall;
+        if (raw !== 'kiri' && raw !== 'kanan' && raw !== 'auto') return;
+        this.wallMode = raw;
+        setActiveWall(this.ui, this.wallMode);
+        this.scene.setWallMode(this.wallMode);
+        const label =
+          raw === 'kiri'
+            ? 'Kiri (lorong 1 — dinding truss)'
+            : raw === 'kanan'
+              ? 'Kanan (lorong 7 — dinding truss)'
+              : 'Auto — dinding luar terdekat';
+        this.flash(`Dinding aktif: ${label}. Tengah (lorong 2–6) untuk lalu.`, '');
+      });
+    }
+
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Shift') {
         this.shiftHeld = true;
@@ -213,6 +237,16 @@ export class Game {
         this.applyShiftPan();
       }
     });
+  }
+
+
+  private currentWallLane(clientX?: number, clientY?: number): number {
+    if (this.wallMode === 'auto' && clientX != null && clientY != null) {
+      const rect = this.ui.canvas.getBoundingClientRect();
+      return this.scene.resolveWallFromClient(clientX, clientY, rect);
+    }
+    if (this.wallMode === 'kanan') return OUTER_LANE_KANAN;
+    return OUTER_LANE_KIRI;
   }
 
   private lengthLabel(): string {
@@ -268,7 +302,7 @@ export class Game {
         !hasMember(this.members, from.id, n.id) &&
         !(
           this.selectedShape === 'lengkung' &&
-          hasArchBetween(this.members, from.id, n.id)
+          hasArchBetween(this.members, from.id, n.id, this.scene.getActiveWallLane())
         ),
     );
     const nearValid = this.scene.nearestNode(validExisting, world, NODE_PICK_RADIUS);
@@ -327,6 +361,9 @@ export class Game {
         if (e.button === 1 || e.button === 2) return;
         if (this.shiftHeld) return;
 
+        if (this.mode === 'bina' || this.mode === 'padam') {
+          this.currentWallLane(e.clientX, e.clientY);
+        }
         const world = getPos(e);
 
         if (this.mode === 'padam') {
@@ -352,6 +389,7 @@ export class Game {
 
     canvas.addEventListener('pointermove', (e) => {
       if (!this.pointerDown) {
+        if (this.mode === 'bina') this.currentWallLane(e.clientX, e.clientY);
         const world = getPos(e);
         const from = this.stickyNode;
         if (from) {
@@ -395,6 +433,7 @@ export class Game {
 
       if (!this.interacting || !this.dragFrom || this.mode !== 'bina') return;
 
+      this.currentWallLane(e.clientX, e.clientY);
       const world = getPos(e);
       const hover = this.resolveNode(world, this.dragFrom, false);
       this.scene.highlightNode(hover?.id ?? this.dragFrom.id);
@@ -443,6 +482,7 @@ export class Game {
         down != null &&
         Math.hypot(e.clientX - down.x, e.clientY - down.y) > CLICK_SLOP_PX;
 
+      this.currentWallLane(e.clientX, e.clientY);
       const world = getPos(e);
 
       // Drag to another point — create/connect endpoint
@@ -532,10 +572,11 @@ export class Game {
     if (isAbutmentDeckSpan(this.nodes(), n1, n2)) {
       return nextFreeBaseLane(this.members) != null;
     }
+    const wall = this.scene.getActiveWallLane();
     if (this.selectedShape === 'lengkung') {
-      return !hasArchBetween(this.members, n1, n2) && !hasMember(this.members, n1, n2);
+      return !hasArchBetween(this.members, n1, n2, wall) && !hasMember(this.members, n1, n2, wall);
     }
-    return !hasMember(this.members, n1, n2);
+    return !hasMember(this.members, n1, n2, wall);
   }
 
   private tryAddMember(n1: number, n2: number): void {
@@ -556,8 +597,9 @@ export class Game {
     }
 
     if (this.selectedShape === 'lengkung') {
-      if (hasArchBetween(this.members, n1, n2) || hasMember(this.members, n1, n2)) {
-        this.flash('Busur / ahli sudah wujud pada nod ini.', 'warn');
+      const wall = this.scene.getActiveWallLane();
+      if (hasArchBetween(this.members, n1, n2, wall) || hasMember(this.members, n1, n2, wall)) {
+        this.flash('Busur / ahli sudah wujud pada dinding ini.', 'warn');
         return;
       }
       this.pushUndo();
@@ -567,6 +609,7 @@ export class Game {
         this.members,
         n1,
         n2,
+        wall,
       );
       if (!placed) {
         this.undoStack.pop();
@@ -584,17 +627,19 @@ export class Game {
       return;
     }
 
-    if (hasMember(this.members, n1, n2)) {
-      this.flash('Ahli sudah wujud.', 'warn');
+    const wall = this.scene.getActiveWallLane();
+    if (hasMember(this.members, n1, n2, wall)) {
+      this.flash('Ahli sudah wujud pada dinding ini.', 'warn');
       return;
     }
     this.pushUndo();
-    addMember(this.members, n1, n2, { shape: 'lurus' });
+    addMember(this.members, n1, n2, { shape: 'lurus', zLane: wall });
     this.invalidateTest();
     this.syncScene();
     this.updateBaseCounter();
+    const wallLabel = wall === OUTER_LANE_KIRI ? 'Kiri (1)' : 'Kanan (7)';
     this.flash(
-      `Lidi ditambah (${this.members.length} ahli). Base: ${countBaseRails(this.members)}/${BASE_RAIL_TARGET}.`,
+      `Lidi ditambah pada dinding ${wallLabel}. Ahli: ${this.members.length}. Base: ${countBaseRails(this.members)}/${BASE_RAIL_TARGET}.`,
       'ok',
     );
   }
@@ -635,7 +680,7 @@ export class Game {
     if (mode === 'bina') {
       this.invalidateTest();
       this.flash(
-        'Mod Bina — tarik = 1 lidi; dua nod = sambung; + Base = 1 lidi penuh / lorong Z.',
+        'Mod Bina — truss pada lorong 1 & 7 (Kiri/Kanan). Tengah untuk lalu. Tarik = 1 lidi.',
         '',
       );
     } else if (mode === 'padam') {
@@ -805,13 +850,13 @@ export class Game {
       tip: TIP_MS,
       statusHtml: msg,
       statusClass: cls,
-      meta: `Ahli: ${this.members.length} · Base: ${countBaseRails(this.members)}/${BASE_RAIL_TARGET} · Lidi: ${this.lengthLabel()} · ${this.selectedShape === 'lengkung' ? 'Lengkung' : 'Lurus'} · Beban: ${this.loadMagnitude}`,
+      meta: `Ahli: ${this.members.length} · Base: ${countBaseRails(this.members)}/${BASE_RAIL_TARGET} · Dinding: ${this.wallMode} · Lidi: ${this.lengthLabel()} · ${this.selectedShape === 'lengkung' ? 'Lengkung' : 'Lurus'} · Beban: ${this.loadMagnitude}`,
     });
   }
 
   private showIdleTip(): void {
     this.flash(
-      'Tarik = 1 lidi. + Base = 1 lorong (ulang ×7). Uji = lihat lidi yang patah.',
+      'Truss pada lorong 1 dan 7 (tepi). Tengah untuk lalu. + Base = deck; Uji = patah.',
       '',
     );
   }

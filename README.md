@@ -31,7 +31,7 @@ npm test         # DSM + length/base-rail checks (vitest)
 
 ## Classroom workflow — tapak 12×7 + 7 lidi panjang as base
 
-Deck magnets: **12 points × 7 parallel Z lines** (flat tapak). Optional brace level is minimal (not a tall 4–5 point Y cage).
+Deck magnets: **12 points × 7 parallel Z lines** (flat tapak). Vertical height points only on outer walls (through-truss). Middle roadway stays clear.
 
 ## Classroom workflow — 7 lidi panjang as base
 
@@ -43,16 +43,17 @@ Matches a real popsicle-stick / lidi challenge (reference patterns A–J):
 4. Optional: click empty space to place a **free joint** (soft grid magnet), then connect two nodes with Lurus / Lengkung.
 5. **Uji** — DSM stress colours; overstressed sticks fail progressively.
 
-Tip shown in-app: *“Tarik untuk letak satu lidi. Tiada kotak automatik.”*
+Tip shown in-app: *“Truss pada lorong 1 dan 7 (tepi). Tengah untuk lalu.”*
 
 ## 3D view
 
 The canvas is a real 3D scene — left-drag to orbit, scroll to zoom, right-drag (or Shift+left-drag) to pan.
 
 - **Default: one drag / placement = one stick** (single cylinder). No automatic box / dual-side mirror / cross braces.
-- **7 green deck lane guides** show where parallel base rails sit (Z lanes 0…6).
-- Optional advanced checkbox **Cermin 3D (lanjutan)** restores near/far mirroring + transverse braces (classroom “depth” box look) — **OFF by default**.
-- Soft magnet dots on the mid plane; free joints appear teal.
+- **7 deck lane guides**: outer lanes 1 & 7 (amber) = **dinding truss**; middle 2–6 (blue) = **laluan** (clear roadway).
+- Vertical height snap grids only on outer walls — no mid-plane cage.
+- **Dinding: Kiri / Kanan / Auto** chooses the active side wall for uprights & diagonals.
+- Optional **Cermin 3D (lanjutan)** mirrors side-truss to both outer walls — **OFF by default**.
 
 ## How to play
 

@@ -11,10 +11,10 @@ export const DECK_POINTS = 12;
 export const SPAN = DECK_POINTS - 1; // 11 → points 0..11 = 12
 
 /**
- * Optional truss height above deck (deck y=0).
- * Keep minimal — visible magnets are the flat 12×7 deck, not a tall Y grid.
+ * Truss wall height above deck (deck y=0).
+ * Height magnets exist only on outer lanes (through-truss side walls).
  */
-export const MAX_HEIGHT = 1;
+export const MAX_HEIGHT = 3;
 
 /**
  * Soft length bands for classroom stick presets (world units).
@@ -56,6 +56,19 @@ export const TRUSS_HALF_DEPTH = 1.05;
 
 /** Classroom challenge: 7 parallel long sticks as the deck base (7 Z lines). */
 export const BASE_RAIL_TARGET = 7;
+
+/**
+ * Through-truss outer walls (0-indexed lanes).
+ * Lane 0 = Kiri / near (1-indexed lorong 1), lane 6 = Kanan / far (lorong 7).
+ * Middle lanes 1..5 are the clear roadway (laluan).
+ */
+export const OUTER_LANE_KIRI = 0;
+export const OUTER_LANE_KANAN = BASE_RAIL_TARGET - 1;
+export const OUTER_LANES = [OUTER_LANE_KIRI, OUTER_LANE_KANAN] as const;
+
+export function isOuterLane(lane: number): boolean {
+  return lane === OUTER_LANE_KIRI || lane === OUTER_LANE_KANAN;
+}
 
 /** Soft snap radius when placing free nodes (world units). */
 export const SOFT_SNAP = 0.35;

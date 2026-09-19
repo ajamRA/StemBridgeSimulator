@@ -1,6 +1,5 @@
 import { BASE_RAIL_TARGET } from '../engine/constants';
-import type { StickLengthPreset } from '../engine/types';
-import type { StickShape } from '../engine/types';
+import type { StickLengthPreset, StickShape, WallMode } from '../engine/types';
 
 export interface UIHandles {
   root: HTMLElement;
@@ -19,6 +18,7 @@ export interface UIHandles {
   resultPanel: HTMLElement;
   lengthButtons: HTMLButtonElement[];
   shapeButtons: HTMLButtonElement[];
+  wallButtons: HTMLButtonElement[];
 }
 
 export function mountUI(app: HTMLElement): UIHandles {
@@ -50,7 +50,13 @@ export function mountUI(app: HTMLElement): UIHandles {
           <button type="button" id="shape-lurus" data-shape="lurus" class="active" title="Lidi lurus (1 ahli)">Lurus</button>
           <button type="button" id="shape-lengkung" data-shape="lengkung" title="Busur: nod puncak + 2 ahli axial">Lengkung</button>
         </div>
-        <label class="adv-toggle" title="Lanjutan: salin setiap lidi ke muka near+far dan tambah brace melintang (nampak kotak). Lalai MATI.">
+        <div class="wall-picker" role="group" aria-label="Dinding truss">
+          <span class="length-label">Dinding:</span>
+          <button type="button" id="wall-kiri" data-wall="kiri" class="active" title="Bina pada lorong 1 (tepi kiri / near)">Kiri</button>
+          <button type="button" id="wall-kanan" data-wall="kanan" title="Bina pada lorong 7 (tepi kanan / far)">Kanan</button>
+          <button type="button" id="wall-auto" data-wall="auto" title="Auto — dinding luar terdekat">Auto</button>
+        </div>
+        <label class="adv-toggle" title="Lanjutan: salin setiap lidi ke kedua-dua dinding luar + brace melintang. Lalai MATI.">
           <input type="checkbox" id="chk-mirror" />
           <span>Cermin 3D (lanjutan)</span>
         </label>
@@ -58,7 +64,7 @@ export function mountUI(app: HTMLElement): UIHandles {
     </header>
     <canvas id="game-canvas"></canvas>
     <aside class="result-panel" id="result-panel">
-      <div class="tip">Tarik = 1 lidi. + Base = 1 lorong (ulang ×7). Uji tunjuk lidi yang patah.</div>
+      <div class="tip">Truss pada lorong 1 dan 7 (tepi). Tengah untuk lalu.</div>
       <div class="status">Mod: <strong>Bina</strong> — tarik = 1 lidi; klik dua nod = sambung; <strong>+ Base</strong> = 1 lidi penuh / lorong Z.</div>
       <div class="legend">
         <span><i style="background:#43a047"></i>Rendah</span>
@@ -86,6 +92,7 @@ export function mountUI(app: HTMLElement): UIHandles {
     resultPanel: app.querySelector('#result-panel')!,
     lengthButtons: Array.from(app.querySelectorAll('.length-picker button')),
     shapeButtons: Array.from(app.querySelectorAll('.shape-picker button')),
+    wallButtons: Array.from(app.querySelectorAll('.wall-picker button')),
   };
 }
 
@@ -111,6 +118,12 @@ export function setActiveLength(ui: UIHandles, length: StickLengthPreset): void 
 export function setActiveShape(ui: UIHandles, shape: StickShape): void {
   for (const btn of ui.shapeButtons) {
     btn.classList.toggle('active', btn.dataset.shape === shape);
+  }
+}
+
+export function setActiveWall(ui: UIHandles, mode: WallMode): void {
+  for (const btn of ui.wallButtons) {
+    btn.classList.toggle('active', btn.dataset.wall === mode);
   }
 }
 

@@ -99,12 +99,21 @@ export function membersEqual(a: MemberDef, b: MemberDef): boolean {
  * Structural duplicate check (same endpoints). Parallel base rails that share
  * endpoints but differ by zLane are allowed via {@link hasBaseLane}.
  */
-export function hasMember(members: MemberDef[], n1: number, n2: number): boolean {
-  return members.some(
-    (m) =>
-      m.role !== 'base' &&
-      ((m.n1 === n1 && m.n2 === n2) || (m.n1 === n2 && m.n2 === n1)),
-  );
+export function hasMember(
+  members: MemberDef[],
+  n1: number,
+  n2: number,
+  zLane?: number,
+): boolean {
+  return members.some((m) => {
+    if (m.role === 'base') return false;
+    const ends =
+      (m.n1 === n1 && m.n2 === n2) || (m.n1 === n2 && m.n2 === n1);
+    if (!ends) return false;
+    // Same XY on a different outer wall is a parallel visual brace, not a duplicate.
+    if (zLane != null && m.zLane != null) return m.zLane === zLane;
+    return true;
+  });
 }
 
 export function hasBaseLane(members: MemberDef[], lane: number): boolean {
@@ -148,18 +157,31 @@ export function addMember(
     Pick<MemberDef, 'shape' | 'archGroupId' | 'archChord' | 'visualOnly' | 'role' | 'zLane'>
   >,
 ): MemberDef | null {
-  if (extra?.role === 'base') {
-    if (extra.zLane == null) return null;
-    if (hasBaseLane(members, extra.zLane)) {
+  let opts = extra ? { ...extra } : undefined;
+  if (opts?.role === 'base') {
+    if (opts.zLane == null) return null;
+    if (hasBaseLane(members, opts.zLane)) {
       // Allow second Lengkung leg on the same lane (same archGroupId).
-      const gid = extra.archGroupId;
-      const sameLane = members.filter((m) => m.role === 'base' && m.zLane === extra.zLane);
+      const gid = opts.archGroupId;
+      const lane = opts.zLane;
+      const sameLane = members.filter((m) => m.role === 'base' && m.zLane === lane);
       if (gid == null || sameLane.some((m) => m.archGroupId !== gid)) return null;
     }
-  } else if (hasMember(members, n1, n2)) {
+  } else if (hasMember(members, n1, n2, opts?.zLane)) {
     return null;
+  } else if (opts?.zLane != null) {
+    // Parallel side-wall brace: first structural, matching XY on other wall visualOnly
+    const alreadyStructural = members.some(
+      (m) =>
+        m.role !== 'base' &&
+        !m.visualOnly &&
+        ((m.n1 === n1 && m.n2 === n2) || (m.n1 === n2 && m.n2 === n1)),
+    );
+    if (alreadyStructural && opts.visualOnly == null) {
+      opts = { ...opts, visualOnly: true };
+    }
   }
-  const m: MemberDef = { id: nextMemberId++, n1, n2, ...extra };
+  const m: MemberDef = { id: nextMemberId++, n1, n2, ...opts };
   members.push(m);
   return m;
 }
@@ -380,12 +402,20 @@ export function pruneOrphanFreeNodes(members: MemberDef[], freeNodes: NodeDef[])
   }
 }
 
-/** Chord already has a Lengkung arch between these endpoints. */
-export function hasArchBetween(members: MemberDef[], n1: number, n2: number): boolean {
+/** Chord already has a Lengkung arch between these endpoints (optionally same wall). */
+export function hasArchBetween(
+  members: MemberDef[],
+  n1: number,
+  n2: number,
+  zLane?: number,
+): boolean {
   return members.some((m) => {
     if (!m.archChord) return false;
     const [a, b] = m.archChord;
-    return (a === n1 && b === n2) || (a === n2 && b === n1);
+    const ends = (a === n1 && b === n2) || (a === n2 && b === n1);
+    if (!ends) return false;
+    if (zLane != null && m.zLane != null) return m.zLane === zLane;
+    return true;
   });
 }
 
@@ -443,9 +473,10 @@ export function addArchMember(
   members: MemberDef[],
   n1: number,
   n2: number,
+  zLane?: number,
 ): ArchPlacement | null {
   if (n1 === n2) return null;
-  if (hasArchBetween(members, n1, n2) || hasMember(members, n1, n2)) return null;
+  if (hasArchBetween(members, n1, n2) || hasMember(members, n1, n2, zLane)) return null;
   const a = findNodeById([...nodes, ...apexNodes], n1);
   const b = findNodeById([...nodes, ...apexNodes], n2);
   if (!a || !b) return null;
@@ -454,16 +485,14 @@ export function addArchMember(
   apexNodes.push(apex);
   const gid = nextArchGroupId++;
   const chord: [number, number] = [n1, n2];
-  const leg1 = addMember(members, n1, apex.id, {
-    shape: 'lengkung',
+  const legExtra = {
+    shape: 'lengkung' as const,
     archGroupId: gid,
     archChord: chord,
-  });
-  const leg2 = addMember(members, apex.id, n2, {
-    shape: 'lengkung',
-    archGroupId: gid,
-    archChord: chord,
-  });
+    ...(zLane != null ? { zLane } : {}),
+  };
+  const leg1 = addMember(members, n1, apex.id, legExtra);
+  const leg2 = addMember(members, apex.id, n2, legExtra);
   if (!leg1 || !leg2) {
     if (leg1) removeMemberById(members, leg1.id);
     if (leg2) removeMemberById(members, leg2.id);

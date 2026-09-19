@@ -233,8 +233,23 @@ button:disabled {
   background: var(--panel-2);
 }
 
+.wall-picker {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.wall-picker button {
+  padding: 6px 10px;
+  min-height: 34px;
+  font-size: 0.8rem;
+  background: var(--panel-2);
+}
+
 .shape-picker button.active,
-.length-picker button.active {
+.length-picker button.active,
+.wall-picker button.active {
   background: var(--btn-active);
   color: #042f4a;
   box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.35);
