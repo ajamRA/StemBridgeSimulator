@@ -26,7 +26,7 @@ import {
   TRUSS_HALF_DEPTH,
 } from '../engine/constants';
 import type { LayerVisibility, WallMode } from '../engine/types';
-import { findNodeById, memberLength } from '../engine/model';
+import { findNodeById } from '../engine/model';
 import { utilizationColor } from '../engine/solver';
 import type { MemberDef, MemberResult, NodeDef, Vec2 } from '../engine/types';
 
@@ -39,6 +39,16 @@ const Z_FAR = -TRUSS_HALF_DEPTH;
 /** Inactive layer fade (declutter). Active layer stays 1. */
 const LAYER_FADED = 0.15;
 const LAYER_SOFT = 0.35;
+
+
+interface BreakAnim {
+  meshes: THREE.Mesh[];
+  t0: number;
+  duration: number;
+  startPos: THREE.Vector3[];
+  startScale: THREE.Vector3[];
+  startQuat: THREE.Quaternion[];
+}
 
 export class BridgeScene {
   readonly renderer: THREE.WebGLRenderer;
@@ -64,6 +74,16 @@ export class BridgeScene {
   private archMeshes = new Map<number, THREE.Mesh[]>();
   private nodeMeshes = new Map<number, THREE.Mesh[]>();
   private transverseMeshes = new Map<number, THREE.Mesh>();
+  /** Amplified Uji displacements — sticks sag/bend until Reset/Bina. */
+  private displacements: Map<number, Vec2> | null = null;
+  private showDeformation = false;
+  private readonly deformScale = 35;
+  private readonly deformClamp = 1.15;
+  /** Break / pulse feedback */
+  private breakAnims: BreakAnim[] = [];
+  private pulseIds = new Set<number>();
+  private pulseT = 0;
+  private breakDoneCb: (() => void) | null = null;
   /** Advanced: duplicate side-truss to both outer walls + transverse braces. Default OFF. */
   private autoMirrorDepth = false;
   /** Through-truss side: kiri=lane0, kanan=lane6, auto=nearest outer. */
@@ -171,6 +191,217 @@ export class BridgeScene {
   getAutoMirrorDepth(): boolean {
     return this.autoMirrorDepth;
   }
+
+
+  /** Amplify solver displacements for classroom visibility (scale × clamp). */
+  private amplifyDisp(d: Vec2 | undefined): Vec2 {
+    if (!d) return { x: 0, y: 0 };
+    let dx = d.x * this.deformScale;
+    let dy = d.y * this.deformScale;
+    const mag = Math.hypot(dx, dy);
+    if (mag > this.deformClamp && mag > 1e-12) {
+      const s = this.deformClamp / mag;
+      dx *= s;
+      dy *= s;
+    }
+    return { x: dx, y: dy };
+  }
+
+  /** Node XY after optional Uji deformation. */
+  private displacedXY(n: NodeDef): Vec2 {
+    if (!this.showDeformation || !this.displacements) {
+      return { x: n.x, y: n.y };
+    }
+    const a = this.amplifyDisp(this.displacements.get(n.id));
+    return { x: n.x + a.x, y: n.y + a.y };
+  }
+
+  setDeformation(displacements: Map<number, Vec2> | null, enabled: boolean): void {
+    this.displacements = displacements;
+    this.showDeformation = enabled && displacements != null && displacements.size > 0;
+  }
+
+  clearDeformation(): void {
+    this.displacements = null;
+    this.showDeformation = false;
+  }
+
+  getShowDeformation(): boolean {
+    return this.showDeformation;
+  }
+
+  /** Pulse / highlight members (critical or about-to-break) until clearPulse. */
+  pulseMembers(ids: number[]): void {
+    this.pulseIds = new Set(ids);
+    this.pulseT = 0;
+  }
+
+  clearPulse(): void {
+    if (this.pulseIds.size) {
+      const reset = (mesh: THREE.Mesh) => {
+        if (mesh.userData.breaking) return;
+        const mat = mesh.material as THREE.MeshStandardMaterial;
+        if (mat.emissive) {
+          mat.emissive.setHex(0x000000);
+          mat.emissiveIntensity = 0;
+        }
+      };
+      for (const [, meshes] of this.memberMeshes) for (const m of meshes) reset(m);
+      for (const [, meshes] of this.archMeshes) for (const m of meshes) reset(m);
+      for (const [, mesh] of this.transverseMeshes) reset(mesh);
+    }
+    this.pulseIds.clear();
+  }
+
+  /**
+   * Snap / crack / fall animation for failing sticks (~0.55s).
+   * Meshes flash dark-red, scale down & drop — remnant stays briefly, then callback.
+   */
+  animateBreaks(memberIds: number[], onDone: () => void): void {
+    this.cancelBreakAnims(false);
+    const idSet = new Set(memberIds);
+    const meshSet = new Set<THREE.Mesh>();
+    for (const id of memberIds) {
+      const ms = this.memberMeshes.get(id);
+      if (ms) for (const m of ms) meshSet.add(m);
+      const t = this.transverseMeshes.get(id);
+      if (t) meshSet.add(t);
+    }
+    // Arch tube: break whole curve if any leg fails
+    for (const [, archMs] of this.archMeshes) {
+      for (const mesh of archMs) {
+        const legs = mesh.userData.archLegIds as number[] | undefined;
+        const mid = mesh.userData.memberId as number | undefined;
+        if ((mid != null && idSet.has(mid)) || (legs && legs.some((lid) => idSet.has(lid)))) {
+          meshSet.add(mesh);
+        }
+      }
+    }
+
+    const meshes = [...meshSet];
+    if (meshes.length === 0) {
+      onDone();
+      return;
+    }
+
+    const now = performance.now();
+    const duration = 600;
+    const startPos: THREE.Vector3[] = [];
+    const startScale: THREE.Vector3[] = [];
+    const startQuat: THREE.Quaternion[] = [];
+    for (const mesh of meshes) {
+      const mat = mesh.material as THREE.MeshStandardMaterial;
+      mat.color.setHex(0x7f0000);
+      mat.emissive = new THREE.Color(0xff1744);
+      mat.emissiveIntensity = 0.85;
+      mat.transparent = true;
+      mesh.visible = true;
+      startPos.push(mesh.position.clone());
+      startScale.push(mesh.scale.clone());
+      startQuat.push(mesh.quaternion.clone());
+      mesh.userData.breaking = true;
+    }
+    this.breakAnims.push({
+      meshes,
+      t0: now,
+      duration,
+      startPos,
+      startScale,
+      startQuat,
+    });
+    this.breakDoneCb = onDone;
+    this.pulseMembers(memberIds);
+  }
+
+  cancelBreakAnims(invokeCb: boolean): void {
+    for (const anim of this.breakAnims) {
+      for (const mesh of anim.meshes) {
+        mesh.userData.breaking = false;
+        // Remnant will be disposed on next syncMembers after model removal
+        mesh.visible = true;
+      }
+    }
+    this.breakAnims = [];
+    const cb = this.breakDoneCb;
+    this.breakDoneCb = null;
+    if (invokeCb && cb) cb();
+  }
+
+  private tickBreakAnims(now: number): void {
+    if (this.breakAnims.length === 0) return;
+    let allDone = true;
+    for (const anim of this.breakAnims) {
+      const t = Math.min(1, (now - anim.t0) / anim.duration);
+      // ease-in
+      const e = t * t;
+      for (let i = 0; i < anim.meshes.length; i++) {
+        const mesh = anim.meshes[i]!;
+        const sp = anim.startPos[i]!;
+        const ss = anim.startScale[i]!;
+        const sq = anim.startQuat[i]!;
+        // Flash then darken
+        const mat = mesh.material as THREE.MeshStandardMaterial;
+        mat.emissiveIntensity = 0.85 * (1 - e) + 0.15;
+        mat.opacity = 1 - e * 0.55;
+        // Scale down (crack) + fall
+        const shrink = 1 - 0.72 * e;
+        mesh.scale.set(ss.x * shrink, ss.y * (1 - 0.35 * e), ss.z * shrink);
+        mesh.position.set(sp.x, sp.y - 0.55 * e, sp.z);
+        // Slight tumble
+        const tumble = new THREE.Quaternion().setFromEuler(
+          new THREE.Euler(0.35 * e, 0.15 * e, 0.55 * e),
+        );
+        mesh.quaternion.copy(sq).multiply(tumble);
+      }
+      if (t < 1) allDone = false;
+    }
+    if (allDone) {
+      // Leave dark-red remnant briefly (~180ms) then finish
+      const oldest = this.breakAnims[0]!;
+      if (now - oldest.t0 < oldest.duration + 180) return;
+      for (const anim of this.breakAnims) {
+        for (const mesh of anim.meshes) {
+          mesh.userData.breaking = false;
+          // hide remnant — Game will remove from model & resync
+          mesh.visible = false;
+        }
+      }
+      this.breakAnims = [];
+      const cb = this.breakDoneCb;
+      this.breakDoneCb = null;
+      if (cb) cb();
+    }
+  }
+
+  private tickPulse(dt: number): void {
+    if (this.pulseIds.size === 0) return;
+    this.pulseT += dt;
+    const wave = 0.5 + 0.5 * Math.sin(this.pulseT * 8);
+    const apply = (mesh: THREE.Mesh, id: number) => {
+      if (!this.pulseIds.has(id) && !(mesh.userData.archLegIds as number[] | undefined)?.some((x) => this.pulseIds.has(x))) {
+        return;
+      }
+      if (mesh.userData.breaking) return;
+      const mat = mesh.material as THREE.MeshStandardMaterial;
+      mat.emissive = new THREE.Color(0xb71c1c);
+      mat.emissiveIntensity = 0.25 + 0.55 * wave;
+    };
+    for (const [id, meshes] of this.memberMeshes) {
+      for (const mesh of meshes) apply(mesh, id);
+    }
+    for (const [, meshes] of this.archMeshes) {
+      for (const mesh of meshes) {
+        const mid = mesh.userData.memberId as number;
+        apply(mesh, mid);
+        const legs = mesh.userData.archLegIds as number[] | undefined;
+        if (legs) for (const lid of legs) apply(mesh, lid);
+      }
+    }
+    for (const [id, mesh] of this.transverseMeshes) {
+      if (mesh.userData.storedTransverse) apply(mesh, id);
+    }
+  }
+
 
   setWallMode(mode: WallMode): void {
     this.wallMode = mode;
@@ -715,7 +946,8 @@ export class BridgeScene {
           opacity: op * (zs.length === 1 ? 0.85 : 1),
         });
         const mesh = new THREE.Mesh(geo, mat);
-        mesh.position.set(n.x, n.y, z);
+        const p = this.displacedXY(n);
+        mesh.position.set(p.x, p.y, z);
         mesh.userData.nodeId = n.id;
         mesh.userData.layer = layer;
         mesh.castShadow = op >= 0.9;
@@ -735,6 +967,7 @@ export class BridgeScene {
     highlightFailed = false,
   ): void {
     const resultMap = new Map(results?.map((r) => [r.id, r]) ?? []);
+    const deform = this.showDeformation;
 
     // --- Lengkung: one smooth Bezier tube per arch group (hide sharp ∧ legs) ---
     const archGroups = new Map<
@@ -756,12 +989,18 @@ export class BridgeScene {
     const liveArch = new Set(archGroups.keys());
     for (const [gid, meshes] of this.archMeshes) {
       if (!liveArch.has(gid)) {
+        const keep: THREE.Mesh[] = [];
         for (const mesh of meshes) {
+          if (mesh.userData.breaking) {
+            keep.push(mesh);
+            continue;
+          }
           this.memberGroup.remove(mesh);
           mesh.geometry.dispose();
           (mesh.material as THREE.Material).dispose();
         }
-        this.archMeshes.delete(gid);
+        if (keep.length) this.archMeshes.set(gid, keep);
+        else this.archMeshes.delete(gid);
       }
     }
 
@@ -769,17 +1008,21 @@ export class BridgeScene {
     for (const [gid, g] of archGroups) {
       for (const leg of g.legs) archLegIds.add(leg.id);
       const [c1, c2] = g.chord;
-      const a = findNodeById(nodes, c1);
-      const b = findNodeById(nodes, c2);
-      if (!a || !b) continue;
+      const aNode = findNodeById(nodes, c1);
+      const bNode = findNodeById(nodes, c2);
+      if (!aNode || !bNode) continue;
       const endIds = new Set([c1, c2]);
       const apexId = g.legs
         .flatMap((l) => [l.n1, l.n2])
         .find((id) => !endIds.has(id));
-      const apex = apexId != null ? findNodeById(nodes, apexId) : undefined;
-      if (!apex) continue;
+      const apexNode = apexId != null ? findNodeById(nodes, apexId) : undefined;
+      if (!apexNode) continue;
 
-      // Quadratic Bezier through ends with apex as curve midpoint
+      const a = this.displacedXY(aNode);
+      const b = this.displacedXY(bNode);
+      const apex = this.displacedXY(apexNode);
+
+      // Quadratic Bezier through displaced ends with apex as curve midpoint
       const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
       const ctrl = {
         x: 2 * apex.x - mid.x,
@@ -801,10 +1044,14 @@ export class BridgeScene {
       const radius = isBase ? BASE_RADIUS : MEMBER_RADIUS;
 
       let meshes = this.archMeshes.get(gid);
+      // Skip geometry updates while a break anim owns these meshes
+      if (meshes?.some((mesh) => mesh.userData.breaking)) continue;
+
+      const archKey = `${a.x.toFixed(3)},${a.y.toFixed(3)},${apex.x.toFixed(3)},${apex.y.toFixed(3)},${b.x.toFixed(3)},${b.y.toFixed(3)},${deform ? 1 : 0}`;
       const needRebuild =
         !meshes ||
         meshes.length !== zs.length ||
-        meshes.some((mesh) => mesh.userData.archKey !== `${apex.x.toFixed(3)},${apex.y.toFixed(3)}`);
+        meshes.some((mesh) => mesh.userData.archKey !== archKey);
       if (needRebuild) {
         if (meshes) {
           for (const mesh of meshes) {
@@ -823,8 +1070,9 @@ export class BridgeScene {
           const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.65 });
           const mesh = new THREE.Mesh(geo, mat);
           mesh.userData.archGroupId = gid;
-          mesh.userData.archKey = `${apex.x.toFixed(3)},${apex.y.toFixed(3)}`;
+          mesh.userData.archKey = archKey;
           mesh.userData.memberId = g.legs[0]!.id;
+          mesh.userData.archLegIds = g.legs.map((l) => l.id);
           mesh.userData.memberRole = g.role;
           mesh.userData.zLane = g.zLane;
           const archOp = this.opacityForMember({
@@ -843,6 +1091,7 @@ export class BridgeScene {
         const archOp = this.opacityForMember({ role: g.role, zLane: g.zLane });
         for (const mesh of meshes!) {
           (mesh.material as THREE.MeshStandardMaterial).color.setHex(color);
+          mesh.userData.archLegIds = g.legs.map((l) => l.id);
           mesh.userData.layerOpacity = archOp;
           this.applyOpacityToMesh(mesh, archOp);
         }
@@ -857,24 +1106,34 @@ export class BridgeScene {
     );
     for (const [id, meshes] of this.memberMeshes) {
       if (!straightIds.has(id)) {
+        const keep: THREE.Mesh[] = [];
         for (const mesh of meshes) {
+          if (mesh.userData.breaking) {
+            keep.push(mesh);
+            continue;
+          }
           this.memberGroup.remove(mesh);
           mesh.geometry.dispose();
           (mesh.material as THREE.Material).dispose();
         }
-        this.memberMeshes.delete(id);
+        if (keep.length) this.memberMeshes.set(id, keep);
+        else this.memberMeshes.delete(id);
       }
     }
 
     for (const m of members) {
       if (m.archGroupId != null) continue;
       if (m.role === 'transverse') continue; // rendered in syncStoredTransverse
-      const a = findNodeById(nodes, m.n1)!;
-      const b = findNodeById(nodes, m.n2)!;
-      const L = memberLength(nodes, m);
+      const aNode = findNodeById(nodes, m.n1)!;
+      const bNode = findNodeById(nodes, m.n2)!;
+      const a = this.displacedXY(aNode);
+      const b = this.displacedXY(bNode);
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const L = Math.hypot(dx, dy) || 1e-6;
       const mx = (a.x + b.x) / 2;
       const my = (a.y + b.y) / 2;
-      const angle = Math.atan2(b.y - a.y, b.x - a.x);
+      const angle = Math.atan2(dy, dx);
 
       let color = m.role === 'base' ? 0xc8a882 : 0xa1887f;
       const r = this.resultForMember(m, members, resultMap);
@@ -887,8 +1146,26 @@ export class BridgeScene {
       const zs = isBase ? [laneZ(m.zLane!)] : this.wallZsForMember(m.zLane);
       const radius = isBase ? BASE_RADIUS : MEMBER_RADIUS;
 
+      // Extra mid bow under load (visible lenturan) from amplified uy + compression
+      let bow = 0;
+      if (deform) {
+        const d1 = this.amplifyDisp(this.displacements?.get(m.n1));
+        const d2 = this.amplifyDisp(this.displacements?.get(m.n2));
+        const avgSag = -((d1.y + d2.y) / 2); // downward positive sag
+        const compBoost = r && r.force < 0 ? 0.12 * Math.min(1, r.utilization) : 0.03;
+        bow = Math.min(0.4, Math.max(0, avgSag * 0.35) + compBoost);
+      }
+
       let meshes = this.memberMeshes.get(m.id);
-      if (!meshes || meshes.length !== zs.length) {
+      if (meshes?.some((mesh) => mesh.userData.breaking)) continue;
+
+      const deformKey = deform ? `t:${bow.toFixed(3)}` : 'cyl';
+      const needRebuild =
+        !meshes ||
+        meshes.length !== zs.length ||
+        meshes.some((mesh) => mesh.userData.deformKey !== deformKey);
+
+      if (needRebuild) {
         if (meshes) {
           for (const mesh of meshes) {
             this.memberGroup.remove(mesh);
@@ -896,14 +1173,37 @@ export class BridgeScene {
             (mesh.material as THREE.Material).dispose();
           }
         }
-        meshes = zs.map(() => {
-          const geo = new THREE.CylinderGeometry(radius, radius, 1, 8);
-          geo.rotateZ(Math.PI / 2);
-          const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
-          const mesh = new THREE.Mesh(geo, mat);
+        meshes = zs.map((z) => {
+          let mesh: THREE.Mesh;
+          if (deform) {
+            // Tube along displaced ends with slight mid sag (looks bent)
+            const nx = L > 1e-9 ? -dy / L : 0;
+            const ny = L > 1e-9 ? dx / L : 1;
+            // Prefer bow toward gravity (down)
+            const sign = ny >= 0 ? -1 : 1;
+            const ctrl = new THREE.Vector3(
+              mx + nx * bow * 0.15,
+              my - bow + ny * bow * 0.05 * sign,
+              z,
+            );
+            const curve = new THREE.QuadraticBezierCurve3(
+              new THREE.Vector3(a.x, a.y, z),
+              ctrl,
+              new THREE.Vector3(b.x, b.y, z),
+            );
+            const geo = new THREE.TubeGeometry(curve, 16, radius, 8, false);
+            const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
+            mesh = new THREE.Mesh(geo, mat);
+          } else {
+            const geo = new THREE.CylinderGeometry(radius, radius, 1, 8);
+            geo.rotateZ(Math.PI / 2);
+            const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
+            mesh = new THREE.Mesh(geo, mat);
+          }
           mesh.userData.memberId = m.id;
           mesh.userData.memberRole = m.role;
           mesh.userData.zLane = m.zLane;
+          mesh.userData.deformKey = deformKey;
           mesh.castShadow = true;
           mesh.receiveShadow = true;
           this.memberGroup.add(mesh);
@@ -912,18 +1212,56 @@ export class BridgeScene {
         this.memberMeshes.set(m.id, meshes);
       }
 
+      if (!meshes) continue;
+
       const memOp = this.opacityForMember(m);
       for (let i = 0; i < meshes.length; i++) {
         const mesh = meshes[i]!;
         const z = zs[i]!;
-        mesh.scale.set(L, 1, 1);
-        mesh.position.set(mx, my, z);
-        mesh.rotation.set(0, 0, angle);
+        if (deform) {
+          // TubeGeometry already sits in world segment space
+          mesh.position.set(0, 0, 0);
+          mesh.rotation.set(0, 0, 0);
+          mesh.scale.set(1, 1, 1);
+        } else {
+          mesh.scale.set(L, 1, 1);
+          mesh.position.set(mx, my, z);
+          mesh.rotation.set(0, 0, angle);
+        }
         (mesh.material as THREE.MeshStandardMaterial).color.setHex(color);
         mesh.userData.memberRole = m.role;
         mesh.userData.zLane = m.zLane;
+        mesh.userData.deformKey = deformKey;
         mesh.userData.layerOpacity = memOp;
         this.applyOpacityToMesh(mesh, memOp);
+      }
+
+      // If deformed tube ends changed, rebuild geometry in place
+      if (deform && meshes[0] && meshes[0].userData.geomKey !== `${a.x.toFixed(3)},${b.x.toFixed(3)},${a.y.toFixed(3)},${b.y.toFixed(3)},${bow.toFixed(3)}`) {
+        const geomKey = `${a.x.toFixed(3)},${b.x.toFixed(3)},${a.y.toFixed(3)},${b.y.toFixed(3)},${bow.toFixed(3)}`;
+        for (let i = 0; i < meshes.length; i++) {
+          const mesh = meshes[i]!;
+          const z = zs[i]!;
+          const nx = L > 1e-9 ? -dy / L : 0;
+          const ny = L > 1e-9 ? dx / L : 1;
+          const sign = ny >= 0 ? -1 : 1;
+          const ctrl = new THREE.Vector3(
+            mx + nx * bow * 0.15,
+            my - bow + ny * bow * 0.05 * sign,
+            z,
+          );
+          const curve = new THREE.QuadraticBezierCurve3(
+            new THREE.Vector3(a.x, a.y, z),
+            ctrl,
+            new THREE.Vector3(b.x, b.y, z),
+          );
+          mesh.geometry.dispose();
+          mesh.geometry = new THREE.TubeGeometry(curve, 16, radius, 8, false);
+          mesh.userData.geomKey = geomKey;
+          mesh.position.set(0, 0, 0);
+          mesh.rotation.set(0, 0, 0);
+          mesh.scale.set(1, 1, 1);
+        }
       }
     }
 
@@ -946,10 +1284,12 @@ export class BridgeScene {
     for (const m of members) {
       if (m.role !== 'transverse') continue;
       if (m.zLaneFrom == null || m.zLaneTo == null) continue;
-      const a = findNodeById(nodes, m.n1);
-      const b = findNodeById(nodes, m.n2);
-      if (!a || !b) continue;
+      const aNode = findNodeById(nodes, m.n1);
+      const bNode = findNodeById(nodes, m.n2);
+      if (!aNode || !bNode) continue;
       live.add(m.id);
+      const a = this.displacedXY(aNode);
+      const b = this.displacedXY(bNode);
 
       const z0 = laneZ(m.zLaneFrom);
       const z1 = laneZ(m.zLaneTo);
@@ -968,6 +1308,7 @@ export class BridgeScene {
       }
 
       let mesh = this.transverseMeshes.get(m.id);
+      if (mesh?.userData.breaking) continue;
       if (!mesh) {
         const geo = new THREE.CylinderGeometry(
           TRANSVERSE_RADIUS,
@@ -1000,6 +1341,7 @@ export class BridgeScene {
     for (const [id, mesh] of this.transverseMeshes) {
       if (!mesh.userData.storedTransverse) continue;
       if (!live.has(id)) {
+        if (mesh.userData.breaking) continue;
         this.transverseGroup.remove(mesh);
         mesh.geometry.dispose();
         (mesh.material as THREE.Material).dispose();
@@ -1068,7 +1410,8 @@ export class BridgeScene {
       }
 
       mesh.scale.set(1, 1, depth);
-      mesh.position.set(n.x, n.y, 0);
+      const pn = this.displacedXY(n);
+      mesh.position.set(pn.x, pn.y, 0);
     }
   }
 
@@ -1242,7 +1585,14 @@ export class BridgeScene {
     this.camera.updateProjectionMatrix();
   }
 
+  private _lastTick = performance.now();
+
   render(): void {
+    const now = performance.now();
+    const dt = Math.min(0.05, (now - this._lastTick) / 1000);
+    this._lastTick = now;
+    this.tickBreakAnims(now);
+    this.tickPulse(dt);
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   }

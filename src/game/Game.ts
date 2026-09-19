@@ -65,7 +65,7 @@ import * as THREE from 'three';
 const CLICK_SLOP_PX = 6;
 
 const TIP_MS =
-  'Pilih Lantai / Dinding kiri / Dinding kanan supaya skrin tak bersepah. Merintang = Kiri↔Kanan. + Base = 1 lorong.';
+  'Uji: lidi melentur; patah nampak putus dulu, bukan hilang terus. Merintang = Kiri↔Kanan. + Base = 1 lorong.';
 
 interface BuildSnapshot {
   members: MemberDef[];
@@ -88,7 +88,10 @@ export class Game {
   private loadNodeId: number;
   private loadMagnitude = DEFAULT_LOAD;
   private lastResults: MemberResult[] | null = null;
+  private lastDisplacements: Map<number, Vec2> | null = null;
   private tested = false;
+  /** True while snap/fall anim plays before members are removed. */
+  private breakingInProgress = false;
 
   /** Default Panjang for base-first classroom workflow. */
   private selectedLength: StickLengthPreset = 'panjang';
@@ -168,6 +171,27 @@ export class Game {
           : 'Cermin 3D MATI — satu tarikan = satu lidi sahaja.',
         on ? 'warn' : 'ok',
       );
+    });
+    this.ui.chkLenturan.addEventListener('change', () => {
+      const on = this.ui.chkLenturan.checked;
+      if (this.tested && this.lastDisplacements) {
+        this.scene.setDeformation(this.lastDisplacements, on);
+        this.refreshNodes();
+        this.syncScene(true);
+        this.flash(
+          on
+            ? 'Lenturan HIDUP — lidi nampak melentur selepas Uji.'
+            : 'Lenturan MATI — warna tegasan sahaja.',
+          '',
+        );
+      } else {
+        this.flash(
+          on
+            ? 'Tunjuk lenturan akan aktif selepas Uji.'
+            : 'Lenturan dimatikan.',
+          '',
+        );
+      }
     });
     this.ui.loadSlider.addEventListener('input', () => {
       this.loadMagnitude = Number(this.ui.loadSlider.value);
@@ -865,6 +889,9 @@ export class Game {
   }
 
   private setMode(mode: GameMode): void {
+    if (this.breakingInProgress && mode !== 'uji') {
+      this.scene.cancelBreakAnims(true); // finish removal via callback
+    }
     this.mode = mode;
     setActiveMode(this.ui, mode);
     this.stickyNode = null;
@@ -887,6 +914,9 @@ export class Game {
   private runTest(): void {
     this.mode = 'uji';
     setActiveMode(this.ui, 'uji');
+    this.scene.cancelBreakAnims(false);
+    this.breakingInProgress = false;
+    this.scene.clearPulse();
 
     // Legacy builds may have marked the second wall visualOnly — promote both walls.
     ensureWallMembersStructural(this.members);
@@ -902,39 +932,34 @@ export class Game {
         statusClass: 'bad',
       });
       this.lastResults = null;
+      this.lastDisplacements = null;
       this.tested = false;
+      this.scene.clearDeformation();
       this.syncScene();
       return;
     }
 
     const prog = progressiveFailure(nodes, this.members, loads);
 
-    // Keep first-step stress colours for display even after snaps
+    // Keep first-step stress colours + displacements for lenturan display
+    const first = prog.steps[0] ?? initial;
     const displayResults =
-      prog.steps[0]?.members?.length
-        ? prog.steps[0]!.members
+      first.members.length
+        ? first.members
         : initial.members.length
           ? initial.members
           : prog.final.members;
 
-    if (prog.removedIds.length > 0) {
-      this.pushUndo();
-      for (const id of prog.removedIds) {
-        removeMemberById(this.members, id);
-      }
-      promoteBaseRails(this.members);
-      pruneOrphanApexes(this.members, this.apexNodes);
-      pruneOrphanFreeNodes(this.members, this.freeNodes);
-      this.refreshNodes();
-      this.updateBaseCounter();
-    }
-
     this.lastResults = displayResults;
+    this.lastDisplacements = first.displacements;
     this.tested = true;
+
+    const showLentur = this.ui.chkLenturan.checked;
+    this.scene.setDeformation(this.lastDisplacements, showLentur);
+    this.refreshNodes();
     this.syncScene(true);
     this.updateLoadArrow();
 
-    const first = prog.steps[0] ?? initial;
     const crit = first.criticalMemberId;
     const critRes = first.members.find((m) => m.id === crit);
     const forceStr = critRes
@@ -949,8 +974,8 @@ export class Game {
       statusClass = prog.collapsed ? 'bad' : 'warn';
       const ids = broken.slice(0, 5).map((id) => `#${id}`).join(', ');
       msg = prog.collapsed
-        ? `Runtuh! Patah pada lidi ${ids}${broken.length > 5 ? '…' : ''}. Lidi gelap merah = titik lemah.`
-        : `Patah pada lidi ${ids}${broken.length > 5 ? '…' : ''}! Lidi gelap merah = paling kritikal.`;
+        ? `Runtuh! Patah pada lidi ${ids}${broken.length > 5 ? '…' : ''}. Lihat putus merah gelap dulu — bukan hilang terus.`
+        : `Patah pada lidi ${ids}${broken.length > 5 ? '…' : ''}! Lidi gelap merah berdenyut = paling kritikal.`;
     } else if (first.stabilized) {
       statusClass = first.maxUtilization >= 0.85 ? 'bad' : 'warn';
       msg =
@@ -964,15 +989,40 @@ export class Game {
       statusClass = 'warn';
       msg = `Hampir had! u=${first.maxUtilization.toFixed(2)} — kritikal lidi #${crit ?? '—'}.`;
     } else {
-      msg = `Lulus! Utilisasi maks u=${first.maxUtilization.toFixed(2)}.`;
+      msg = `Lulus! Utilisasi maks u=${first.maxUtilization.toFixed(2)}.${showLentur ? ' (lidi melentur di bawah beban)' : ''}`;
     }
+
+    // Pulse critical / broken members in the scene
+    const pulseIds = broken.length > 0 ? broken.slice() : crit != null ? [crit] : [];
+    if (pulseIds.length) this.scene.pulseMembers(pulseIds);
 
     renderResultPanel(this.ui.resultPanel, {
       tip: TIP_MS,
       statusHtml: msg,
       statusClass,
-      meta: `Beban=${this.loadMagnitude} ↓. Kritikal: ${forceStr}. Base: ${countBaseRails(this.members)}/${BASE_RAIL_TARGET} (kongsi beban). Digugurkan: ${broken.length}.`,
+      meta: `Beban=${this.loadMagnitude} ↓. Kritikal: ${forceStr}. Base: ${countBaseRails(this.members)}/${BASE_RAIL_TARGET} (kongsi beban). Digugurkan: ${broken.length}.${showLentur ? ' Lenturan ON.' : ''}`,
     });
+
+    // Break feedback: flash / snap / fall BEFORE removing from model
+    if (broken.length > 0) {
+      this.breakingInProgress = true;
+      this.scene.animateBreaks(broken, () => {
+        this.breakingInProgress = false;
+        this.pushUndo();
+        for (const id of broken) {
+          removeMemberById(this.members, id);
+        }
+        promoteBaseRails(this.members);
+        pruneOrphanApexes(this.members, this.apexNodes);
+        pruneOrphanFreeNodes(this.members, this.freeNodes);
+        // Keep lenturan on remaining structure
+        this.scene.setDeformation(this.lastDisplacements, this.ui.chkLenturan.checked);
+        this.refreshNodes();
+        this.syncScene(true);
+        this.updateBaseCounter();
+        this.scene.clearPulse();
+      });
+    }
   }
 
   private buildLoads(): Map<number, Vec2> {
@@ -982,8 +1032,13 @@ export class Game {
   }
 
   private invalidateTest(): void {
+    this.scene.cancelBreakAnims(false);
+    this.breakingInProgress = false;
+    this.scene.clearPulse();
+    this.scene.clearDeformation();
     this.tested = false;
     this.lastResults = null;
+    this.lastDisplacements = null;
     this.syncScene();
     this.updateLoadArrow();
   }
@@ -1054,7 +1109,7 @@ export class Game {
 
   private showIdleTip(): void {
     this.flash(
-      'Pilih Lantai / Dinding kiri / Dinding kanan supaya skrin tak bersepah. + Base = deck; Uji = patah.',
+      'Uji: lidi melentur; patah nampak putus dulu, bukan hilang terus. + Base = deck.',
       '',
     );
   }

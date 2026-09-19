@@ -12,6 +12,8 @@ export interface UIHandles {
   btnBase: HTMLButtonElement;
   /** Advanced: near/far mirror + transverse braces (default OFF). */
   chkMirror: HTMLInputElement;
+  /** Show amplified lenturan after Uji (default ON). */
+  chkLenturan: HTMLInputElement;
   baseCounter: HTMLElement;
   loadSlider: HTMLInputElement;
   loadVal: HTMLElement;
@@ -61,11 +63,15 @@ export function mountUI(app: HTMLElement): UIHandles {
           <input type="checkbox" id="chk-mirror" />
           <span>Cermin 3D (lanjutan)</span>
         </label>
+        <label class="adv-toggle" title="Selepas Uji, lidi nampak melentur (anjakan nod digandakan). Matikan untuk warna tegasan sahaja.">
+          <input type="checkbox" id="chk-lenturan" checked />
+          <span>Tunjuk lenturan</span>
+        </label>
       </div>
     </header>
     <canvas id="game-canvas"></canvas>
     <aside class="result-panel" id="result-panel">
-      <div class="tip">Pilih Lantai / Dinding kiri / Dinding kanan supaya skrin tak bersepah.</div>
+      <div class="tip">Uji: lidi melentur; patah nampak putus dulu, bukan hilang terus.</div>
       <div class="status">Mod: <strong>Bina</strong> — tarik = 1 lidi; klik dua nod = sambung; <strong>+ Base</strong> = 1 lidi penuh / lorong Z.</div>
       <div class="legend">
         <span><i style="background:#43a047"></i>Rendah</span>
@@ -87,6 +93,7 @@ export function mountUI(app: HTMLElement): UIHandles {
     btnReset: app.querySelector('#btn-reset')!,
     btnBase: app.querySelector('#btn-base')!,
     chkMirror: app.querySelector('#chk-mirror')!,
+    chkLenturan: app.querySelector('#chk-lenturan')!,
     baseCounter: app.querySelector('#base-counter')!,
     loadSlider: app.querySelector('#beban')!,
     loadVal: app.querySelector('#beban-val')!,

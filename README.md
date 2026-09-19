@@ -117,4 +117,4 @@ src/
 - Physics is still planar axial DSM; multi-rail base is visual-first (one structural chord).
 - Free nodes live in XY; Z lanes are for base rails + wall assignment; Merintang spans Z with `zLaneFrom`/`zLaneTo`.
 - Single load point (mid-span deck); no multi-load patterns yet.
-- Progressive failure removes all `u≥1` members each step (no timed animation).
+- Progressive failure removes overstressed members after a short snap/fall animation; Uji also amplifies node displacements so sticks look bent (toggle **Tunjuk lenturan**).
