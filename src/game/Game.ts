@@ -65,7 +65,7 @@ import * as THREE from 'three';
 const CLICK_SLOP_PX = 6;
 
 const TIP_MS =
-  'Truss pada lorong 1 dan 7 (tepi). Merintang = sambung Kiri↔Kanan. + Base = 1 lorong; Uji = warna tegasan kedua-dua dinding.';
+  'Pilih Lantai / Dinding kiri / Dinding kanan supaya skrin tak bersepah. Merintang = Kiri↔Kanan. + Base = 1 lorong.';
 
 interface BuildSnapshot {
   members: MemberDef[];
@@ -93,7 +93,7 @@ export class Game {
   /** Default Panjang for base-first classroom workflow. */
   private selectedLength: StickLengthPreset = 'panjang';
   private selectedShape: StickShape = 'lurus';
-  private wallMode: WallMode = 'kiri';
+  private wallMode: WallMode = 'lantai';
 
   private dragFrom: NodeDef | null = null;
   private pointerDown = false;
@@ -210,28 +210,40 @@ export class Game {
     for (const btn of this.ui.wallButtons) {
       btn.addEventListener('click', () => {
         const raw = btn.dataset.wall;
-        if (raw !== 'kiri' && raw !== 'kanan' && raw !== 'auto' && raw !== 'merintang') {
+        if (
+          raw !== 'lantai' &&
+          raw !== 'kiri' &&
+          raw !== 'kanan' &&
+          raw !== 'merintang' &&
+          raw !== 'auto'
+        ) {
           return;
         }
         this.wallMode = raw;
         this.stickyNode = null;
         this.scene.highlightNode(null);
         this.scene.setPreview(null, null, false);
+        this.scene.setGhostNode(null);
         setActiveWall(this.ui, this.wallMode);
         this.scene.setWallMode(this.wallMode);
         this.refreshNodes();
+        this.syncScene();
         const label =
-          raw === 'kiri'
-            ? 'Kiri (lorong 1 — dinding truss)'
-            : raw === 'kanan'
-              ? 'Kanan (lorong 7 — dinding truss)'
-              : raw === 'merintang'
-                ? 'Merintang (Kiri↔Kanan) — klik nod kiri, kemudian nod kanan (XY sama/dekat)'
-                : 'Auto — dinding luar terdekat';
+          raw === 'lantai'
+            ? 'Lantai — deck 12×7 (dinding disembunyikan)'
+            : raw === 'kiri'
+              ? 'Dinding kiri (lorong 1)'
+              : raw === 'kanan'
+                ? 'Dinding kanan (lorong 7)'
+                : raw === 'merintang'
+                  ? 'Merintang (Kiri↔Kanan) — klik nod, kemudian nod sepadan'
+                  : 'Auto — dinding luar terdekat';
         this.flash(
           raw === 'merintang'
             ? `${label}. Satu lidi merintang merentas laluan Z.`
-            : `Dinding aktif: ${label}. Tengah (lorong 2–6) untuk lalu.`,
+            : raw === 'lantai'
+              ? `${label}. + Base / tarik pin↔roller = lidi panjang. ${TIP_MS}`
+              : `Fokus: ${label}. Lapisan lain redup.`,
           '',
         );
       });
@@ -257,13 +269,51 @@ export class Game {
 
 
   private currentWallLane(clientX?: number, clientY?: number): number {
-    if (this.wallMode === 'merintang') return OUTER_LANE_KIRI;
+    if (this.wallMode === 'merintang' || this.wallMode === 'lantai') {
+      return OUTER_LANE_KIRI;
+    }
     if (this.wallMode === 'auto' && clientX != null && clientY != null) {
       const rect = this.ui.canvas.getBoundingClientRect();
       return this.scene.resolveWallFromClient(clientX, clientY, rect);
     }
     if (this.wallMode === 'kanan') return OUTER_LANE_KANAN;
     return OUTER_LANE_KIRI;
+  }
+
+  /** Nodes pickable on the active edit-focus layer only. */
+  private pickableForMode(): NodeDef[] {
+    const all = pickableNodes(this.nodes());
+    if (this.wallMode === 'lantai') {
+      return all.filter((n) => n.isDeck || Math.abs(n.y) < 1e-6);
+    }
+    // Wall / merintang: all XY joints (walls share XY); magnets declutter via scene.
+    return all;
+  }
+
+  /** Members considered for delete / near-pick on the active layer. */
+  private membersForActiveLayer(): MemberDef[] {
+    switch (this.wallMode) {
+      case 'lantai':
+        return this.members.filter((m) => m.role === 'base');
+      case 'kiri':
+        return this.members.filter(
+          (m) =>
+            m.role !== 'transverse' &&
+            m.role !== 'base' &&
+            (m.zLane === OUTER_LANE_KIRI || m.zLane == null),
+        );
+      case 'kanan':
+        return this.members.filter(
+          (m) =>
+            m.role !== 'transverse' &&
+            m.role !== 'base' &&
+            m.zLane === OUTER_LANE_KANAN,
+        );
+      case 'merintang':
+        return this.members.filter((m) => m.role === 'transverse');
+      default:
+        return this.members;
+    }
   }
 
   private lengthLabel(): string {
@@ -292,16 +342,23 @@ export class Game {
     from: NodeDef | null,
     allowCreate: boolean,
   ): NodeDef | null {
-    const candidates = pickableNodes(this.nodes());
+    const candidates = this.pickableForMode();
+    // Lantai: stay on deck plane (y=0) for create/snap
+    const planeWorld =
+      this.wallMode === 'lantai' ? { x: world.x, y: 0 } : world;
     if (!from) {
-      const near = this.scene.nearestNode(candidates, world, NODE_PICK_RADIUS);
+      const near = this.scene.nearestNode(candidates, planeWorld, NODE_PICK_RADIUS);
       if (near) return near;
       if (!allowCreate) return null;
+      if (this.wallMode === 'lantai') {
+        // Deck edit: only snap to existing deck magnets — no free mid-air joints
+        return this.scene.nearestNode(candidates, planeWorld, SOFT_SNAP * 1.5);
+      }
       const { node, created } = findOrCreateNodeNear(
         this.gridNodes,
         this.freeNodes,
         this.apexNodes,
-        world,
+        planeWorld,
         SOFT_SNAP * 1.5,
       );
       if (created) {
@@ -322,22 +379,23 @@ export class Game {
           hasArchBetween(this.members, from.id, n.id, this.scene.getActiveWallLane())
         ),
     );
-    const nearValid = this.scene.nearestNode(validExisting, world, NODE_PICK_RADIUS);
+    const nearValid = this.scene.nearestNode(validExisting, planeWorld, NODE_PICK_RADIUS);
     if (nearValid) return nearValid;
 
     const nearAny = this.scene.nearestNode(
       candidates.filter((n) => n.id !== from.id),
-      world,
+      planeWorld,
       NODE_PICK_RADIUS,
     );
     if (nearAny) return nearAny;
 
     if (!allowCreate) return null;
+    if (this.wallMode === 'lantai') return null;
     const { node, created } = findOrCreateNodeNear(
       this.gridNodes,
       this.freeNodes,
       this.apexNodes,
-      world,
+      planeWorld,
       SOFT_SNAP * 1.5,
     );
     if (created) {
@@ -431,7 +489,10 @@ export class Game {
             );
             this.scene.setGhostNode(null);
           } else {
-            const snapped = softSnapToGrid(world.x, world.y);
+            const snapped =
+              this.wallMode === 'lantai'
+                ? softSnapToGrid(world.x, 0)
+                : softSnapToGrid(world.x, world.y);
             this.scene.setPreview(
               { x: from.x, y: from.y },
               snapped,
@@ -442,14 +503,22 @@ export class Game {
           }
         } else {
           const hover = this.scene.nearestNode(
-            pickableNodes(this.nodes()),
+            this.pickableForMode(),
             world,
             NODE_PICK_RADIUS,
           );
           this.scene.highlightNode(hover?.id ?? null);
           this.scene.setPreview(null, null, false);
-          if (!hover && this.mode === 'bina' && this.wallMode !== 'merintang') {
-            this.scene.setGhostNode(softSnapToGrid(world.x, world.y));
+          if (
+            !hover &&
+            this.mode === 'bina' &&
+            this.wallMode !== 'merintang'
+          ) {
+            const g =
+              this.wallMode === 'lantai'
+                ? softSnapToGrid(world.x, 0)
+                : softSnapToGrid(world.x, world.y);
+            this.scene.setGhostNode(g);
           } else {
             this.scene.setGhostNode(null);
           }
@@ -482,7 +551,10 @@ export class Game {
         );
         this.scene.setGhostNode(null);
       } else {
-        const snapped = softSnapToGrid(world.x, world.y);
+        const snapped =
+          this.wallMode === 'lantai'
+            ? softSnapToGrid(world.x, 0)
+            : softSnapToGrid(world.x, world.y);
         this.scene.setPreview(
           { x: this.dragFrom.x, y: this.dragFrom.y },
           snapped,
@@ -535,7 +607,7 @@ export class Game {
 
       // Short click: two-click sticky workflow (may place free node as sticky)
       const same = this.scene.nearestNode(
-        pickableNodes(this.nodes()),
+        this.pickableForMode(),
         world,
         NODE_PICK_RADIUS,
       );
@@ -618,6 +690,13 @@ export class Game {
         OUTER_LANE_KANAN,
       );
     }
+    if (this.wallMode === 'lantai') {
+      // Deck focus: full abutment span → next base rail; otherwise refuse wall braces
+      if (n1 === n2) return false;
+      return isAbutmentDeckSpan(this.nodes(), n1, n2)
+        ? nextFreeBaseLane(this.members) != null
+        : false;
+    }
     if (n1 === n2) return false;
     if (!isAllowedMemberForLength(this.nodes(), n1, n2, this.selectedLength)) {
       return false;
@@ -679,6 +758,18 @@ export class Game {
   private tryAddMember(n1: number, n2: number): void {
     if (this.wallMode === 'merintang') {
       this.tryAddTransverse(n1, n2);
+      return;
+    }
+
+    if (this.wallMode === 'lantai') {
+      if (isAbutmentDeckSpan(this.nodes(), n1, n2)) {
+        this.placeBaseRail();
+        return;
+      }
+      this.flash(
+        'Mod Lantai — guna + Base atau tarik pin↔roller untuk lidi panjang. Tukar ke Dinding kiri/kanan untuk brace.',
+        'warn',
+      );
       return;
     }
 
@@ -747,9 +838,11 @@ export class Game {
   }
 
   private deleteAt(world: Vec2): void {
-    const m = findMemberNearPoint(this.nodes(), this.members, world.x, world.y, 0.28);
+    const layerMembers = this.membersForActiveLayer();
+    const pool = layerMembers.length ? layerMembers : this.members;
+    const m = findMemberNearPoint(this.nodes(), pool, world.x, world.y, 0.28);
     if (!m) {
-      this.flash('Tiada lidi berhampiran.', 'warn');
+      this.flash('Tiada lidi pada lapisan aktif berhampiran.', 'warn');
       return;
     }
     this.pushUndo();
@@ -782,7 +875,7 @@ export class Game {
     if (mode === 'bina') {
       this.invalidateTest();
       this.flash(
-        'Mod Bina — Kiri/Kanan = satu dinding; Merintang = sambung Kiri↔Kanan. Tengah untuk lalu.',
+        'Mod Bina — Edit fokus: Lantai / Dinding kiri / Dinding kanan / Merintang.',
         '',
       );
     } else if (mode === 'padam') {
@@ -955,13 +1048,13 @@ export class Game {
       tip: TIP_MS,
       statusHtml: msg,
       statusClass: cls,
-      meta: `Ahli: ${this.members.length} · Base: ${countBaseRails(this.members)}/${BASE_RAIL_TARGET} · Dinding: ${this.wallMode} · Lidi: ${this.lengthLabel()} · ${this.selectedShape === 'lengkung' ? 'Lengkung' : 'Lurus'} · Beban: ${this.loadMagnitude}`,
+      meta: `Ahli: ${this.members.length} · Base: ${countBaseRails(this.members)}/${BASE_RAIL_TARGET} · Fokus: ${this.wallMode} · Lidi: ${this.lengthLabel()} · ${this.selectedShape === 'lengkung' ? 'Lengkung' : 'Lurus'} · Beban: ${this.loadMagnitude}`,
     });
   }
 
   private showIdleTip(): void {
     this.flash(
-      'Truss pada lorong 1 dan 7 (tepi). Tengah untuk lalu. + Base = deck; Uji = patah.',
+      'Pilih Lantai / Dinding kiri / Dinding kanan supaya skrin tak bersepah. + Base = deck; Uji = patah.',
       '',
     );
   }

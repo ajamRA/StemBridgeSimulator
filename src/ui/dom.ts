@@ -50,12 +50,12 @@ export function mountUI(app: HTMLElement): UIHandles {
           <button type="button" id="shape-lurus" data-shape="lurus" class="active" title="Lidi lurus (1 ahli)">Lurus</button>
           <button type="button" id="shape-lengkung" data-shape="lengkung" title="Busur: nod puncak + 2 ahli axial">Lengkung</button>
         </div>
-        <div class="wall-picker" role="group" aria-label="Dinding truss">
-          <span class="length-label">Dinding:</span>
-          <button type="button" id="wall-kiri" data-wall="kiri" class="active" title="Bina pada lorong 1 (tepi kiri / near)">Kiri</button>
-          <button type="button" id="wall-kanan" data-wall="kanan" title="Bina pada lorong 7 (tepi kanan / far)">Kanan</button>
-          <button type="button" id="wall-auto" data-wall="auto" title="Auto — dinding luar terdekat">Auto</button>
-          <button type="button" id="wall-merintang" data-wall="merintang" title="Merintang: sambung nod kiri ke nod kanan (atas/bawah) supaya dua dinding jadi satu rangka.">Merintang</button>
+        <div class="wall-picker edit-focus-picker" role="group" aria-label="Edit fokus">
+          <span class="length-label">Edit fokus:</span>
+          <button type="button" id="wall-lantai" data-wall="lantai" class="active" title="Lantai — deck 12×7 sahaja (sembunyi dinding)">Lantai</button>
+          <button type="button" id="wall-kiri" data-wall="kiri" title="Dinding kiri — lorong 1 sahaja">Dinding kiri</button>
+          <button type="button" id="wall-kanan" data-wall="kanan" title="Dinding kanan — lorong 7 sahaja">Dinding kanan</button>
+          <button type="button" id="wall-merintang" data-wall="merintang" title="Merintang: sambung Kiri↔Kanan merentas laluan">Merintang</button>
         </div>
         <label class="adv-toggle" title="Lanjutan: salin setiap lidi ke kedua-dua dinding luar + brace melintang. Lalai MATI.">
           <input type="checkbox" id="chk-mirror" />
@@ -65,7 +65,7 @@ export function mountUI(app: HTMLElement): UIHandles {
     </header>
     <canvas id="game-canvas"></canvas>
     <aside class="result-panel" id="result-panel">
-      <div class="tip">Truss pada lorong 1 dan 7 (tepi). Tengah untuk lalu. Merintang = sambung Kiri↔Kanan.</div>
+      <div class="tip">Pilih Lantai / Dinding kiri / Dinding kanan supaya skrin tak bersepah.</div>
       <div class="status">Mod: <strong>Bina</strong> — tarik = 1 lidi; klik dua nod = sambung; <strong>+ Base</strong> = 1 lidi penuh / lorong Z.</div>
       <div class="legend">
         <span><i style="background:#43a047"></i>Rendah</span>

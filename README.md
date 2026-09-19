@@ -52,8 +52,10 @@ The canvas is a real 3D scene — left-drag to orbit, scroll to zoom, right-drag
 - **Default: one drag / placement = one stick** (single cylinder). No automatic box / dual-side mirror / cross braces.
 - **7 deck lane guides**: outer lanes 1 & 7 (amber) = **dinding truss**; middle 2–6 (blue) = **laluan** (clear roadway).
 - Vertical height snap grids only on outer walls — no mid-plane cage.
-- **Dinding: Kiri / Kanan / Auto** chooses the active side wall for uprights & diagonals.
-- **Merintang** connects Kiri (lane 0) ↔ Kanan (lane 6) with a transverse stick across the roadway — click a node, then the matching/near node (or click the same node twice).
+- **Edit fokus: Lantai / Dinding kiri / Dinding kanan / Merintang** — declutter the 3D view so only the active layer is full opacity & pickable (inactive ≈ 0.15 or magnets hidden).
+- **Lantai** — deck 12×7 only (base rails); walls hidden/faded.
+- **Dinding kiri / kanan** — that outer wall only (lorong 1 / 7); other wall faded, deck softened.
+- **Merintang** connects Kiri (lane 0) ↔ Kanan (lane 6) with a transverse stick — both wall tops faint; click a node, then the matching/near node (or click the same node twice).
 - Both outer walls are **structural** (Uji paints stress colours on BOTH).
 - Optional **Cermin 3D (lanjutan)** mirrors side-truss to both outer walls — **OFF by default**.
 
