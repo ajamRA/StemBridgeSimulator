@@ -13,8 +13,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
-  BASE_RAIL_TARGET,
-  DECK_POINTS,
   GRID,
   laneZ,
   MAX_HEIGHT,
@@ -25,6 +23,12 @@ import {
   SPAN,
   TRUSS_HALF_DEPTH,
 } from '../engine/constants';
+import {
+  deckLaneSegmentPairs,
+  deckMagnetPositions,
+  wallGridSegmentPairs,
+  wallMagnetPositions,
+} from '../engine/grid';
 import type { LayerVisibility, WallMode } from '../engine/types';
 import { findNodeById } from '../engine/model';
 import { utilizationColor } from '../engine/solver';
@@ -704,22 +708,15 @@ export class BridgeScene {
     const showWallKiri = this.layerVis.wallKiri > 0.05;
     const showWallKanan = this.layerVis.wallKanan > 0.05;
 
-    // Deck roadway: 7 parallel base lines (middle = laluan, outer = dinding)
+    const toVec3 = (p: { x: number; y: number; z: number }) =>
+      new THREE.Vector3(p.x, p.y, p.z);
+
+    // Deck roadway guides + magnets — exact createGridNodes / laneZ coords (no Y offset)
     if (showDeck) {
-      const roadPts: THREE.Vector3[] = [];
-      const wallPts: THREE.Vector3[] = [];
-      for (let lane = 0; lane < BASE_RAIL_TARGET; lane++) {
-        const z = laneZ(lane);
-        const pair = [
-          new THREE.Vector3(0, 0.02, z),
-          new THREE.Vector3(SPAN * GRID, 0.02, z),
-        ];
-        if (isOuterLane(lane)) wallPts.push(...pair);
-        else roadPts.push(...pair);
-      }
+      const { road, wall } = deckLaneSegmentPairs();
       this.gridGroup.add(
         new THREE.LineSegments(
-          new THREE.BufferGeometry().setFromPoints(roadPts),
+          new THREE.BufferGeometry().setFromPoints(road.map(toVec3)),
           new THREE.LineBasicMaterial({
             color: 0x90caf9,
             transparent: true,
@@ -729,7 +726,7 @@ export class BridgeScene {
       );
       this.gridGroup.add(
         new THREE.LineSegments(
-          new THREE.BufferGeometry().setFromPoints(wallPts),
+          new THREE.BufferGeometry().setFromPoints(wall.map(toVec3)),
           new THREE.LineBasicMaterial({
             color: 0xffb74d,
             transparent: true,
@@ -738,7 +735,6 @@ export class BridgeScene {
         ),
       );
 
-      // 12×7 deck magnets — outer lanes "dinding truss", middle "laluan"
       const magnetGeo = new THREE.SphereGeometry(0.08, 10, 10);
       const roadMat = new THREE.MeshStandardMaterial({
         color: 0xbbdefb,
@@ -747,6 +743,9 @@ export class BridgeScene {
         transparent: true,
         opacity: 0.7 * deckOp,
         roughness: 0.55,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
       });
       const wallDeckMat = new THREE.MeshStandardMaterial({
         color: 0xffe0b2,
@@ -755,36 +754,33 @@ export class BridgeScene {
         transparent: true,
         opacity: 0.95 * deckOp,
         roughness: 0.5,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
       });
-      for (let xi = 0; xi < DECK_POINTS; xi++) {
-        const x = xi * GRID;
-        for (let lane = 0; lane < BASE_RAIL_TARGET; lane++) {
-          const outer = isOuterLane(lane);
-          const mesh = new THREE.Mesh(magnetGeo, outer ? wallDeckMat : roadMat);
-          mesh.position.set(x, 0.04, laneZ(lane));
-          mesh.userData.deckMagnet = true;
-          mesh.userData.layer = 'deck';
-          mesh.userData.xIndex = xi;
-          mesh.userData.zLane = lane;
-          mesh.userData.laneRole = outer ? 'dinding' : 'laluan';
-          // Hide magnets entirely when deck is heavily faded (wall-only focus)
-          mesh.visible = deckOp >= 0.5;
-          this.gridGroup.add(mesh);
-        }
+      for (const p of deckMagnetPositions()) {
+        const outer = isOuterLane(p.lane);
+        const mesh = new THREE.Mesh(magnetGeo, outer ? wallDeckMat : roadMat);
+        mesh.position.set(p.x, p.y, p.z);
+        mesh.userData.deckMagnet = true;
+        mesh.userData.layer = 'deck';
+        mesh.userData.xIndex = Math.round(p.x / GRID);
+        mesh.userData.zLane = p.lane;
+        mesh.userData.laneRole = outer ? 'dinding' : 'laluan';
+        mesh.visible = deckOp >= 0.5;
+        this.gridGroup.add(mesh);
       }
     }
 
-    // Vertical snap grids / height points ONLY on outer walls
+    // Wall wireframes + height magnets from the SAME vertex list as createGridNodes
     const heightGeo = new THREE.SphereGeometry(0.07, 10, 10);
     for (const lane of OUTER_LANES) {
       const isKiri = lane === OUTER_LANE_KIRI;
       const wallOp = isKiri ? this.layerVis.wallKiri : this.layerVis.wallKanan;
-      // Hide inactive wall grids entirely (declutter); faint only for Merintang
       if (wallOp < 0.35) continue;
       if (isKiri && !showWallKiri) continue;
       if (!isKiri && !showWallKanan) continue;
 
-      const z = laneZ(lane);
       const active = wallOp >= 0.9;
       const heightMat = new THREE.MeshStandardMaterial({
         color: active ? 0xfff176 : 0xffcc80,
@@ -795,42 +791,42 @@ export class BridgeScene {
         roughness: active ? 0.4 : 0.5,
       });
 
-      const vPts: THREE.Vector3[] = [];
-      for (let xi = 0; xi < DECK_POINTS; xi++) {
-        const x = xi * GRID;
-        vPts.push(new THREE.Vector3(x, 0, z));
-        vPts.push(new THREE.Vector3(x, MAX_HEIGHT * GRID, z));
+      // Wireframe from wallGridSegmentPairs (same vertices as magnets / nodes).
+      // Only one focused wall at a time in auto/kiri/kanan — dual cages at an angle
+      // look like a half-cell shift (parallax). Merintang: faint on both.
+      const drawWire =
+        this.wallMode === 'merintang'
+          ? wallOp >= 0.35
+          : this.wallMode === 'auto'
+            ? lane === this.activeWallLane
+            : active;
+      if (drawWire) {
+        const vPts = wallGridSegmentPairs(lane).map(toVec3);
+        this.gridGroup.add(
+          new THREE.LineSegments(
+            new THREE.BufferGeometry().setFromPoints(vPts),
+            new THREE.LineBasicMaterial({
+              color: active ? 0xffee58 : 0xffa726,
+              transparent: true,
+              opacity: (active ? 0.55 : 0.22) * wallOp,
+            }),
+          ),
+        );
       }
-      for (let yi = 1; yi <= MAX_HEIGHT; yi++) {
-        const y = yi * GRID;
-        vPts.push(new THREE.Vector3(0, y, z));
-        vPts.push(new THREE.Vector3(SPAN * GRID, y, z));
-      }
-      this.gridGroup.add(
-        new THREE.LineSegments(
-          new THREE.BufferGeometry().setFromPoints(vPts),
-          new THREE.LineBasicMaterial({
-            color: active ? 0xffee58 : 0xffa726,
-            transparent: true,
-            opacity: (active ? 0.55 : 0.28) * wallOp,
-          }),
-        ),
-      );
 
-      // Hide wall magnets when faded (inactive layer) — declutter
       const showMagnets = wallOp >= 0.5;
       if (showMagnets) {
-        for (let yi = 1; yi <= MAX_HEIGHT; yi++) {
-          const y = yi * GRID;
-          for (let xi = 0; xi < DECK_POINTS; xi++) {
-            const mesh = new THREE.Mesh(heightGeo, heightMat);
-            mesh.position.set(xi * GRID, y, z);
-            mesh.userData.wallMagnet = true;
-            mesh.userData.layer = isKiri ? 'wallKiri' : 'wallKanan';
-            mesh.userData.zLane = lane;
-            mesh.userData.yIndex = yi;
-            this.gridGroup.add(mesh);
-          }
+        for (const p of wallMagnetPositions(lane)) {
+          // Deck row already has deck magnets when deck is visible; still place
+          // wall magnets at y=0 so every wall vertex is occupied when walls focus.
+          if (p.y === 0 && showDeck && deckOp >= 0.5) continue;
+          const mesh = new THREE.Mesh(heightGeo, heightMat);
+          mesh.position.set(p.x, p.y, p.z);
+          mesh.userData.wallMagnet = true;
+          mesh.userData.layer = isKiri ? 'wallKiri' : 'wallKanan';
+          mesh.userData.zLane = lane;
+          mesh.userData.yIndex = Math.round(p.y / GRID);
+          this.gridGroup.add(mesh);
         }
       }
     }

@@ -9,6 +9,7 @@ import {
   SOFT_SNAP,
   SPAN,
 } from './constants';
+import { gridXValues, gridYValues, nearestGridPoint } from './grid';
 import type {
   MemberDef,
   NodeDef,
@@ -27,15 +28,16 @@ let nextFreeNodeId = FREE_ID_START;
 export function createGridNodes(): NodeDef[] {
   const nodes: NodeDef[] = [];
   let id = 0;
-  for (let y = 0; y <= MAX_HEIGHT; y++) {
-    for (let x = 0; x <= SPAN; x++) {
+  // Same X/Y lists as visual grids / soft-snap (see engine/grid.ts).
+  for (const y of gridYValues()) {
+    for (const x of gridXValues()) {
       let support: SupportType = 'none';
       if (y === 0 && x === 0) support = 'pin';
-      if (y === 0 && x === SPAN) support = 'roller';
+      if (y === 0 && x === SPAN * GRID) support = 'roller';
       nodes.push({
         id: id++,
-        x: x * GRID,
-        y: y * GRID,
+        x,
+        y,
         support,
         isDeck: y === 0,
       });
@@ -386,16 +388,11 @@ export function isAllowedMemberForLength(
   return L >= LENGTH_PENDEK_MAX - 0.25 && L <= LENGTH_MAX + 1e-9;
 }
 
-/** Soft-snap a world point onto the integer grid (light magnet). */
+/** Soft-snap a world point onto the shared grid vertices (engine/grid.ts). */
 export function softSnapToGrid(x: number, y: number, radius = SOFT_SNAP): Vec2 {
-  const gx = Math.round(x / GRID) * GRID;
-  const gy = Math.round(y / GRID) * GRID;
-  const clampedY = Math.max(0, Math.min(MAX_HEIGHT * GRID, gy));
-  const clampedX = Math.max(0, Math.min(SPAN * GRID, gx));
-  if (Math.hypot(x - clampedX, y - clampedY) <= radius) {
-    return { x: clampedX, y: clampedY };
-  }
-  // No hard snap — still clamp into build volume softly
+  const hit = nearestGridPoint(x, y, radius);
+  if (hit) return hit;
+  // Outside magnet radius — still clamp into build volume (no separate spacing)
   return {
     x: Math.max(0, Math.min(SPAN * GRID, x)),
     y: Math.max(0, Math.min(MAX_HEIGHT * GRID, y)),
