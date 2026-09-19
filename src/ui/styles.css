@@ -197,6 +197,49 @@ button:disabled {
   vertical-align: middle;
 }
 
+
+.length-picker {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.length-picker .length-label {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-right: 2px;
+}
+
+.length-picker button {
+  padding: 6px 10px;
+  min-height: 34px;
+  font-size: 0.8rem;
+  background: var(--panel-2);
+}
+
+.shape-picker {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.shape-picker button {
+  padding: 6px 10px;
+  min-height: 34px;
+  font-size: 0.8rem;
+  background: var(--panel-2);
+}
+
+.shape-picker button.active,
+.length-picker button.active {
+  background: var(--btn-active);
+  color: #042f4a;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.35);
+}
+
 @media (max-width: 640px) {
   .toolbar h1 {
     width: 100%;

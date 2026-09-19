@@ -18,7 +18,7 @@ export const defaultLevel: LevelConfig = {
   name: 'Simple Span',
   nameMs: 'Rentang Mudah',
   tipMs:
-    'Tip: Orbit kamera 3D (seret kiri). Lidi auto-cermin Near/Far (hanya visual). Segi tiga pada satah XY supaya stabil — mampatan lebih lemah!',
+    'Tip: Base: pilih Panjang. Sokongan: pilih Pendek. Lengkung = busur (nod puncak + 2 ahli) untuk arch. Segi tiga XY supaya stabil — mampatan lebih lemah!',
   span: SPAN,
   defaultLoad: DEFAULT_LOAD,
 };

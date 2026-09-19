@@ -39,7 +39,7 @@ The canvas is a real 3D scene — left-drag to orbit around the bridge, scroll t
 
 ## How to play
 
-1. **Bina** — click two grid nodes (or click-drag) to place a stick. Allowed lengths: 1–3 grid units axis-aligned, plus diagonals with legs 1–3. One placement builds **both** sides.
+1. **Bina** — click two grid nodes (or click-drag) to place a stick. Use the **Lidi** picker (Pendek / Sederhana / Panjang / Auto) so base chords are Panjang and bracing is Pendek; **Lurus** vs **Lengkung** (Lengkung inserts an upward apex node + two axial legs so the arch carries load in the 2D DSM). One placement builds **both** sides.
 2. Supports: left **pin**, right **roller**, span 10. Yellow pin / blue rollers on abutments.
 3. Adjust **Beban** (vertical load on mid-span deck node).
 4. **Uji** — solve; sticks colour green → yellow → orange → red → dark red (fail). Failed members are removed and the structure is re-solved.

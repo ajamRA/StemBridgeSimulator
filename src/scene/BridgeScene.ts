@@ -271,10 +271,12 @@ export class BridgeScene {
       let color = 0xb0bec5;
       if (n.support === 'pin') color = 0xffca28;
       else if (n.support === 'roller') color = 0x90caf9;
+      else if (n.isApex) color = 0xce93d8;
       else if (n.isDeck) color = 0xcfd8dc;
 
       const make = (z: number) => {
-        const geo = new THREE.SphereGeometry(NODE_RADIUS, 12, 12);
+        const r = n.isApex ? NODE_RADIUS * 0.75 : NODE_RADIUS;
+        const geo = new THREE.SphereGeometry(r, 12, 12);
         const mat = new THREE.MeshStandardMaterial({ color });
         const mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(n.x, n.y, z);
@@ -409,7 +411,12 @@ export class BridgeScene {
     }
   }
 
-  setPreview(from: Vec2 | null, to: Vec2 | null, valid: boolean): void {
+  setPreview(
+    from: Vec2 | null,
+    to: Vec2 | null,
+    valid: boolean,
+    curved = false,
+  ): void {
     while (this.previewGroup.children.length) {
       const c = this.previewGroup.children[0]!;
       this.previewGroup.remove(c);
@@ -422,11 +429,44 @@ export class BridgeScene {
 
     const color = valid ? 0x4fc3f7 : 0xef5350;
     const mat = new THREE.LineBasicMaterial({ color });
+
+    const mx = (from.x + to.x) / 2;
+    const my = (from.y + to.y) / 2;
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const rise = Math.min(1, Math.max(0.5, len * 0.35));
+    let px = -dy / len;
+    let py = dx / len;
+    if (py < 0) {
+      px = -px;
+      py = -py;
+    }
+    const apex =
+      Math.abs(dy) < 1e-9 || py < 0.25
+        ? { x: mx, y: my + rise }
+        : { x: mx + px * rise, y: my + py * rise };
+
     for (const z of [Z_NEAR, Z_FAR]) {
-      const geo = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(from.x, from.y, z),
-        new THREE.Vector3(to.x, to.y, z),
-      ]);
+      let pts: THREE.Vector3[];
+      if (curved) {
+        // Quadratic Bezier through upward apex (matches Lengkung placement)
+        pts = [];
+        const steps = 12;
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps;
+          const u = 1 - t;
+          const x = u * u * from.x + 2 * u * t * apex.x + t * t * to.x;
+          const y = u * u * from.y + 2 * u * t * apex.y + t * t * to.y;
+          pts.push(new THREE.Vector3(x, y, z));
+        }
+      } else {
+        pts = [
+          new THREE.Vector3(from.x, from.y, z),
+          new THREE.Vector3(to.x, to.y, z),
+        ];
+      }
+      const geo = new THREE.BufferGeometry().setFromPoints(pts);
       this.previewGroup.add(new THREE.Line(geo, mat));
     }
     // Cross preview on deck connection

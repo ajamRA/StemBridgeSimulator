@@ -5,6 +5,8 @@ export interface Vec2 {
 
 export type SupportType = 'none' | 'pin' | 'roller';
 
+export type StickShape = 'lurus' | 'lengkung';
+
 export interface NodeDef {
   id: number;
   x: number;
@@ -12,6 +14,11 @@ export interface NodeDef {
   support: SupportType;
   /** True if this node is on the deck (can receive load) */
   isDeck: boolean;
+  /**
+   * Intermediate apex of a Lengkung (curved) stick — not on the build snap grid.
+   * Included in the DSM; excluded from placement picking.
+   */
+  isApex?: boolean;
 }
 
 export interface MemberDef {
@@ -24,6 +31,12 @@ export interface MemberDef {
    * this flag is a safety net if a bar is ever tagged visual.
    */
   visualOnly?: boolean;
+  /** Straight chord vs curved arch (Lengkung uses two segments + apex). */
+  shape?: StickShape;
+  /** Shared id for the two axial legs of one Lengkung stick. */
+  archGroupId?: number;
+  /** Original chord endpoints [a,b] for a Lengkung segment. */
+  archChord?: [number, number];
 }
 
 export interface MemberResult {
