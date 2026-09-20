@@ -9,16 +9,36 @@ export interface ProgressiveResult {
   collapsed: boolean;
 }
 
+export interface ProgressiveOptions {
+  /**
+   * Max members to break per Uji click.
+   * Default 1 = one clear patah (critical stick only).
+   * Pass 2 for at-most-two; use with continuous for cascade.
+   */
+  maxBreaks?: number;
+  /**
+   * When true, re-solve and keep removing until stable / empty
+   * ("runtuh berterusan"). Default false = single click, one patah.
+   */
+  continuous?: boolean;
+  /** Cap cascade iterations when continuous. Ignored otherwise. */
+  maxSteps?: number;
+}
+
 /**
- * Solve, remove overstressed members (u≥1), re-solve until stable.
- * Soft-stabilized solves still produce member colours — never a dead-end.
+ * Solve and optionally remove overstressed members (u≥1).
+ * Default: break only the worst 1 member — no full-bridge cascade.
  */
 export function progressiveFailure(
   nodes: NodeDef[],
   members: MemberDef[],
   loads: Map<number, Vec2>,
-  maxSteps = 20,
+  opts: ProgressiveOptions = {},
 ): ProgressiveResult {
+  const maxBreaks = Math.max(1, opts.maxBreaks ?? 1);
+  const continuous = opts.continuous ?? false;
+  const maxSteps = continuous ? (opts.maxSteps ?? 20) : 1;
+
   let current = cloneMembers(members);
   const steps: SolveResult[] = [];
   const removedIds: number[] = [];
@@ -29,17 +49,24 @@ export function progressiveFailure(
     steps.push(result);
 
     if (!result.ok) {
-      // Truly empty / unusable — stop
       collapsed = current.length === 0;
       break;
     }
 
+    if (removedIds.length >= maxBreaks) break;
+
     const failed = result.members.filter((m) => m.failed);
     if (failed.length === 0) break;
 
-    // Snap the worst offenders first (clearest "patah" feedback)
+    // Worst offenders first (clearest "patah" feedback)
     failed.sort((a, b) => b.utilization - a.utilization);
-    const toRemove = failed.slice(0, Math.max(1, Math.ceil(failed.length / 2)));
+    const budget = maxBreaks - removedIds.length;
+    // Default / non-continuous: only the worst stick(s) up to budget.
+    // Continuous cascade: still respect budget but can take several per step.
+    const take = continuous
+      ? Math.min(budget, Math.max(1, Math.ceil(failed.length / 2)))
+      : Math.min(budget, maxBreaks);
+    const toRemove = failed.slice(0, take);
     for (const f of toRemove) {
       if (removeMemberById(current, f.id)) removedIds.push(f.id);
     }
@@ -56,6 +83,14 @@ export function progressiveFailure(
         maxUtilization: 1,
         criticalMemberId: removedIds[removedIds.length - 1] ?? null,
       });
+      break;
+    }
+
+    if (!continuous) {
+      // One clear patah — optional follow-up solve for final colours, then stop.
+      const after = solveTruss(nodes, current, loads);
+      steps.push(after);
+      if (!after.ok && current.length === 0) collapsed = true;
       break;
     }
   }

@@ -94,7 +94,7 @@ export function mountUI(app: HTMLElement): UIHandles {
           ${segBtn('wall-lantai', 'Lantai', 'Lantai — deck 12×7 sahaja (sembunyi dinding)', Layers01Icon as IconSvgObject, 'wall', 'lantai', true)}
           ${segBtn('wall-kiri', 'Dinding kiri', 'Dinding kiri — lorong 1 sahaja', LayoutLeftIcon as IconSvgObject, 'wall', 'kiri')}
           ${segBtn('wall-kanan', 'Dinding kanan', 'Dinding kanan — lorong 7 sahaja', LayoutRightIcon as IconSvgObject, 'wall', 'kanan')}
-          ${segBtn('wall-merintang', 'Merintang', 'Merintang: sambung Kiri↔Kanan merentas laluan', BridgeIcon as IconSvgObject, 'wall', 'merintang')}
+          ${segBtn('wall-melintang', 'Melintang', 'Melintang: sambung Kiri↔Kanan merentas laluan', BridgeIcon as IconSvgObject, 'wall', 'melintang')}
         </div>
       </aside>
 

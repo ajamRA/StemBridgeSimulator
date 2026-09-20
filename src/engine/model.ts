@@ -122,7 +122,7 @@ export function hasBaseLane(members: MemberDef[], lane: number): boolean {
   return members.some((m) => m.role === 'base' && m.zLane === lane);
 }
 
-/** True if a transverse (Merintang) brace already spans these XY endpoints across the given Z lanes. */
+/** True if a transverse (Melintang) brace already spans these XY endpoints across the given Z lanes. */
 export function hasTransverse(
   members: MemberDef[],
   n1: number,
@@ -143,7 +143,7 @@ export function hasTransverse(
 }
 
 /**
- * Place one Merintang stick across the roadway (outer wall → outer wall).
+ * Place one Melintang stick across the roadway (outer wall → outer wall).
  * Same XY (n1===n2) is allowed — pure cross-brace with no XY length.
  * Different XY = skewed transverse brace (XY projection enters the DSM).
  */
@@ -340,7 +340,7 @@ export function cloneMembers(members: MemberDef[]): MemberDef[] {
  * Drops:
  * - non-base visualOnly bars (legacy junk only — side walls must NOT be visualOnly)
  * - self-loops / zero XY length
- * - pure Merintang (same XY, Z-only span)
+ * - pure Melintang (same XY, Z-only span)
  *
  * Parallel base rails AND both outer-wall trusses DO enter the solve —
  * same XY chord × N ≈ N×EA (classroom dual-wall / multi-rail load sharing).
@@ -349,7 +349,7 @@ export function cloneMembers(members: MemberDef[]): MemberDef[] {
 export function membersForSolver(nodes: NodeDef[], members: MemberDef[]): MemberDef[] {
   return members.filter((m) => {
     if (m.visualOnly && m.role !== 'base') return false;
-    // Pure Merintang (same XY, span in Z only) has no XY axial length — skip DSM.
+    // Pure Melintang (same XY, span in Z only) has no XY axial length — skip DSM.
     // Skewed transverse (different XY) contributes its XY projection like a normal brace.
     if (m.role === 'transverse' && m.n1 === m.n2) return false;
     if (m.n1 === m.n2) return false;

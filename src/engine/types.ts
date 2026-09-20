@@ -52,7 +52,7 @@ export interface MemberDef {
    */
   zLane?: number;
   /**
-   * Transverse (Merintang) member: spans two Z lanes across the roadway.
+   * Transverse (Melintang) member: spans two Z lanes across the roadway.
    * Endpoints are XY node ids (often the same id for a pure cross-brace).
    * Render: (x1,y1,zLaneFrom) → (x2,y2,zLaneTo).
    */
@@ -83,7 +83,7 @@ export type GameMode = 'bina' | 'uji' | 'padam';
 
 /** Active through-truss side wall for build/snap. */
 /** Active edit-focus / build plane for decluttered 3D editing. */
-export type WallMode = 'lantai' | 'kiri' | 'kanan' | 'merintang' | 'auto';
+export type WallMode = 'lantai' | 'kiri' | 'kanan' | 'melintang' | 'auto';
 
 /** Per-layer opacity (0 = hide, ~0.15 = fade, 1 = active). */
 export interface LayerVisibility {

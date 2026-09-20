@@ -31,7 +31,6 @@ import {
   pruneOrphanApexes,
   promoteBaseRails,
   pruneOrphanFreeNodes,
-  removeMemberById,
   removeMemberOrArch,
   resetMemberIds,
   softSnapToGrid,
@@ -65,7 +64,7 @@ import * as THREE from 'three';
 const CLICK_SLOP_PX = 6;
 
 const TIP_MS =
-  'Uji: lidi melentur; patah nampak putus dulu, bukan hilang terus. Merintang = Kiri↔Kanan. + Base = 1 lorong.';
+  'Uji: satu lidi paling kritikal patah (bukan semua). Melintang = Kiri↔Kanan. + Base = 1 lorong.';
 
 interface BuildSnapshot {
   members: MemberDef[];
@@ -239,12 +238,14 @@ export class Game {
           raw !== 'lantai' &&
           raw !== 'kiri' &&
           raw !== 'kanan' &&
+          raw !== 'melintang' &&
           raw !== 'merintang' &&
           raw !== 'auto'
         ) {
           return;
         }
-        this.wallMode = raw;
+        // Legacy alias: merintang → melintang
+        this.wallMode = raw === 'merintang' ? 'melintang' : raw;
         this.stickyNode = null;
         this.scene.highlightNode(null);
         this.scene.setPreview(null, null, false);
@@ -260,12 +261,12 @@ export class Game {
               ? 'Dinding kiri (lorong 1)'
               : raw === 'kanan'
                 ? 'Dinding kanan (lorong 7)'
-                : raw === 'merintang'
-                  ? 'Merintang (Kiri↔Kanan) — klik nod, kemudian nod sepadan'
+                : raw === 'melintang' || raw === 'merintang'
+                  ? 'Melintang (Kiri↔Kanan) — klik nod pada mana-mana ketinggian, kemudian nod sepadan'
                   : 'Auto — dinding luar terdekat';
         this.flash(
-          raw === 'merintang'
-            ? `${label}. Satu lidi merintang merentas laluan Z.`
+          raw === 'melintang' || raw === 'merintang'
+            ? `${label}. Satu lidi melintang merentas laluan Z — semua nod dinding boleh dipilih.`
             : raw === 'lantai'
               ? `${label}. + Base / tarik pin↔roller = lidi panjang. ${TIP_MS}`
               : `Fokus: ${label}. Lapisan lain redup.`,
@@ -294,7 +295,7 @@ export class Game {
 
 
   private currentWallLane(clientX?: number, clientY?: number): number {
-    if (this.wallMode === 'merintang' || this.wallMode === 'lantai') {
+    if (this.wallMode === 'melintang' || this.wallMode === 'lantai') {
       return OUTER_LANE_KIRI;
     }
     if (this.wallMode === 'auto' && clientX != null && clientY != null) {
@@ -311,7 +312,7 @@ export class Game {
     if (this.wallMode === 'lantai') {
       return all.filter((n) => n.isDeck || Math.abs(n.y) < 1e-6);
     }
-    // Wall / merintang: all XY joints (walls share XY); magnets declutter via scene.
+    // Wall / melintang: all XY joints (walls share XY); magnets declutter via scene.
     return all;
   }
 
@@ -334,7 +335,7 @@ export class Game {
             m.role !== 'base' &&
             m.zLane === OUTER_LANE_KANAN,
         );
-      case 'merintang':
+      case 'melintang':
         return this.members.filter((m) => m.role === 'transverse');
       default:
         return this.members;
@@ -374,6 +375,8 @@ export class Game {
     if (!from) {
       const near = this.scene.nearestNode(candidates, planeWorld, NODE_PICK_RADIUS);
       if (near) return near;
+      // Melintang: only existing wall-grid nodes (all heights, both outer walls)
+      if (this.wallMode === 'melintang') return null;
       if (!allowCreate) return null;
       if (this.wallMode === 'lantai') {
         // Deck edit: only snap to existing deck magnets — no free mid-air joints
@@ -415,7 +418,7 @@ export class Game {
     if (nearAny) return nearAny;
 
     if (!allowCreate) return null;
-    if (this.wallMode === 'lantai') return null;
+    if (this.wallMode === 'lantai' || this.wallMode === 'melintang') return null;
     const { node, created } = findOrCreateNodeNear(
       this.gridNodes,
       this.freeNodes,
@@ -504,7 +507,7 @@ export class Game {
               this.selectedShape === 'lengkung',
             );
             this.scene.setGhostNode(null);
-          } else if (this.wallMode === 'merintang') {
+          } else if (this.wallMode === 'melintang') {
             // Preview pure cross-brace at sticky XY across the roadway
             this.scene.setPreview(
               { x: from.x, y: from.y },
@@ -537,7 +540,7 @@ export class Game {
           if (
             !hover &&
             this.mode === 'bina' &&
-            this.wallMode !== 'merintang'
+            this.wallMode !== 'melintang'
           ) {
             const g =
               this.wallMode === 'lantai'
@@ -567,7 +570,7 @@ export class Game {
           this.selectedShape === 'lengkung',
         );
         this.scene.setGhostNode(null);
-      } else if (this.wallMode === 'merintang') {
+      } else if (this.wallMode === 'melintang') {
         this.scene.setPreview(
           { x: this.dragFrom.x, y: this.dragFrom.y },
           { x: this.dragFrom.x, y: this.dragFrom.y },
@@ -644,8 +647,8 @@ export class Game {
         this.scene.highlightNode(null);
         this.pendingCreated = null;
       } else if (this.stickyNode && this.stickyNode.id === clicked.id) {
-        // Merintang one-click helper: second click on same XY = pure cross-brace
-        if (this.wallMode === 'merintang') {
+        // Melintang one-click helper: second click on same XY = pure cross-brace
+        if (this.wallMode === 'melintang') {
           this.tryAddTransverse(clicked.id, clicked.id);
           this.stickyNode = null;
           this.scene.highlightNode(null);
@@ -660,8 +663,8 @@ export class Game {
         this.scene.highlightNode(clicked.id);
         this.pendingCreated = null; // keep free node as sticky start
         this.flash(
-          this.wallMode === 'merintang'
-            ? 'Nod dipilih — klik nod sepadan pada dinding lain (atau klik semula untuk merintang lurus Z).'
+          this.wallMode === 'melintang'
+            ? 'Nod dipilih — klik nod sepadan pada dinding lain (atau klik semula untuk melintang lurus Z).'
             : 'Nod dipilih — klik nod kedua (atau ruang kosong) untuk sambung lidi.',
           '',
         );
@@ -706,7 +709,7 @@ export class Game {
   }
 
   private canPlace(n1: number, n2: number): boolean {
-    if (this.wallMode === 'merintang') {
+    if (this.wallMode === 'melintang') {
       return !hasTransverse(
         this.members,
         n1,
@@ -737,10 +740,10 @@ export class Game {
     return !hasMember(this.members, n1, n2, wall);
   }
 
-  /** Place one Merintang stick Kiri(lane0) ↔ Kanan(lane6). Same XY allowed. */
+  /** Place one Melintang stick Kiri(lane0) ↔ Kanan(lane6). Same XY allowed. */
   private tryAddTransverse(n1: number, n2: number): void {
     if (hasTransverse(this.members, n1, n2, OUTER_LANE_KIRI, OUTER_LANE_KANAN)) {
-      this.flash('Merintang sudah wujud antara nod ini.', 'warn');
+      this.flash('Melintang sudah wujud antara nod ini.', 'warn');
       return;
     }
     // Prefer near-matching XY; allow skewed braces but warn if far
@@ -765,7 +768,7 @@ export class Game {
     );
     if (!placed) {
       this.undoStack.pop();
-      this.flash('Gagal menambah merintang.', 'warn');
+      this.flash('Gagal menambah melintang.', 'warn');
       return;
     }
     this.invalidateTest();
@@ -774,14 +777,14 @@ export class Game {
     const same = n1 === n2 || dxy < 1e-6;
     this.flash(
       same
-        ? `Merintang ditambah merentas laluan (nod #${n1}). Dua dinding kini bersambung.`
-        : `Merintang condong ditambah (#${n1}↔#${n2}). Ahli: ${this.members.length}.`,
+        ? `Melintang ditambah merentas laluan (nod #${n1}). Dua dinding kini bersambung.`
+        : `Melintang condong ditambah (#${n1}↔#${n2}). Ahli: ${this.members.length}.`,
       'ok',
     );
   }
 
   private tryAddMember(n1: number, n2: number): void {
-    if (this.wallMode === 'merintang') {
+    if (this.wallMode === 'melintang') {
       this.tryAddTransverse(n1, n2);
       return;
     }
@@ -903,7 +906,7 @@ export class Game {
     if (mode === 'bina') {
       this.invalidateTest();
       this.flash(
-        'Mod Bina — Edit fokus: Lantai / Dinding kiri / Dinding kanan / Merintang.',
+        'Mod Bina — Edit fokus: Lantai / Dinding kiri / Dinding kanan / Melintang.',
         '',
       );
     } else if (mode === 'padam') {
@@ -940,7 +943,11 @@ export class Game {
       return;
     }
 
-    const prog = progressiveFailure(nodes, this.members, loads);
+    // Default: one clear patah (worst stick only) — not a full cascade
+    const prog = progressiveFailure(nodes, this.members, loads, {
+      maxBreaks: 1,
+      continuous: false,
+    });
 
     // Keep first-step stress colours + displacements for lenturan display
     const first = prog.steps[0] ?? initial;
@@ -973,10 +980,10 @@ export class Game {
 
     if (broken.length > 0) {
       statusClass = prog.collapsed ? 'bad' : 'warn';
-      const ids = broken.slice(0, 5).map((id) => `#${id}`).join(', ');
+      const ids = broken.map((id) => `#${id}`).join(', ');
       msg = prog.collapsed
-        ? `Runtuh! Patah pada lidi ${ids}${broken.length > 5 ? '…' : ''}. Lihat putus merah gelap dulu — bukan hilang terus.`
-        : `Patah pada lidi ${ids}${broken.length > 5 ? '…' : ''}! Lidi gelap merah berdenyut = paling kritikal.`;
+        ? `Runtuh! Lidi kritikal ${ids} patah — struktur tidak lagi berdiri.`
+        : `Patah! Lidi kritikal ${ids} putus (merah). Lidi lain kekal — tekan Uji lagi untuk patah seterusnya.`;
     } else if (first.stabilized) {
       statusClass = first.maxUtilization >= 0.85 ? 'bad' : 'warn';
       msg =
@@ -1011,7 +1018,8 @@ export class Game {
         this.breakingInProgress = false;
         this.pushUndo();
         for (const id of broken) {
-          removeMemberById(this.members, id);
+          // Whole Lengkung if a leg fails; otherwise single member
+          removeMemberOrArch(this.members, this.apexNodes, id);
         }
         promoteBaseRails(this.members);
         pruneOrphanApexes(this.members, this.apexNodes);

@@ -46,11 +46,13 @@ const LAYER_SOFT = 0.35;
 
 
 interface BreakAnim {
-  meshes: THREE.Mesh[];
+  /** Falling / fading clones — never touch length scale of live sticks. */
+  clones: THREE.Mesh[];
+  /** Live meshes left full-size until model removal. */
+  originals: THREE.Mesh[];
   t0: number;
   duration: number;
   startPos: THREE.Vector3[];
-  startScale: THREE.Vector3[];
   startQuat: THREE.Quaternion[];
 }
 
@@ -258,8 +260,10 @@ export class BridgeScene {
   }
 
   /**
-   * Snap / crack / fall animation for failing sticks (~0.55s).
-   * Meshes flash dark-red, scale down & drop — remnant stays briefly, then callback.
+   * Snap / crack / fall for failing sticks (~0.6s).
+   * Animates a *clone* (flash red, opacity, slight drop/tumble).
+   * Never multiplies the live cylinder length scale — remaining sticks stay full size.
+   * Original mesh is hidden until Game removes it from the model.
    */
   animateBreaks(memberIds: number[], onDone: () => void): void {
     this.cancelBreakAnims(false);
@@ -290,36 +294,74 @@ export class BridgeScene {
 
     const now = performance.now();
     const duration = 600;
+    const clones: THREE.Mesh[] = [];
+    const originals: THREE.Mesh[] = [];
     const startPos: THREE.Vector3[] = [];
-    const startScale: THREE.Vector3[] = [];
     const startQuat: THREE.Quaternion[] = [];
+
     for (const mesh of meshes) {
-      const mat = mesh.material as THREE.MeshStandardMaterial;
-      mat.color.setHex(0x7f0000);
-      mat.emissive = new THREE.Color(0xff1744);
-      mat.emissiveIntensity = 0.85;
-      mat.transparent = true;
-      mesh.visible = true;
-      startPos.push(mesh.position.clone());
-      startScale.push(mesh.scale.clone());
-      startQuat.push(mesh.quaternion.clone());
+      const parent = mesh.parent;
+      if (!parent) continue;
+
+      // Deep-clone material so flash/opacity never touches the live stick mats
+      const srcMat = mesh.material as THREE.MeshStandardMaterial;
+      const cloneMat = srcMat.clone();
+      cloneMat.color.setHex(0x7f0000);
+      cloneMat.emissive = new THREE.Color(0xff1744);
+      cloneMat.emissiveIntensity = 0.9;
+      cloneMat.transparent = true;
+      cloneMat.opacity = 1;
+      cloneMat.depthWrite = false;
+
+      const clone = mesh.clone(false);
+      clone.geometry = mesh.geometry; // share geo; disposed only with original
+      clone.material = cloneMat;
+      clone.position.copy(mesh.position);
+      clone.quaternion.copy(mesh.quaternion);
+      // Preserve full length scale (cylinder uses scale.x = L)
+      clone.scale.copy(mesh.scale);
+      clone.userData.breakClone = true;
+      clone.castShadow = false;
+      parent.add(clone);
+
+      // Leave original full-size but hidden until model removal
       mesh.userData.breaking = true;
+      mesh.visible = false;
+
+      clones.push(clone);
+      originals.push(mesh);
+      startPos.push(clone.position.clone());
+      startQuat.push(clone.quaternion.clone());
     }
+
+    if (clones.length === 0) {
+      onDone();
+      return;
+    }
+
     this.breakAnims.push({
-      meshes,
+      clones,
+      originals,
       t0: now,
       duration,
       startPos,
-      startScale,
       startQuat,
     });
     this.breakDoneCb = onDone;
     this.pulseMembers(memberIds);
   }
 
+  private disposeBreakClone(clone: THREE.Mesh): void {
+    clone.parent?.remove(clone);
+    const mat = clone.material as THREE.Material;
+    mat.dispose();
+    // geometry is shared with the original — do not dispose
+  }
+
   cancelBreakAnims(invokeCb: boolean): void {
     for (const anim of this.breakAnims) {
-      for (const mesh of anim.meshes) {
+      for (const clone of anim.clones) this.disposeBreakClone(clone);
+      for (const mesh of anim.originals) {
         mesh.userData.breaking = false;
         // Remnant will be disposed on next syncMembers after model removal
         mesh.visible = true;
@@ -338,35 +380,30 @@ export class BridgeScene {
       const t = Math.min(1, (now - anim.t0) / anim.duration);
       // ease-in
       const e = t * t;
-      for (let i = 0; i < anim.meshes.length; i++) {
-        const mesh = anim.meshes[i]!;
+      for (let i = 0; i < anim.clones.length; i++) {
+        const clone = anim.clones[i]!;
         const sp = anim.startPos[i]!;
-        const ss = anim.startScale[i]!;
         const sq = anim.startQuat[i]!;
-        // Flash then darken
-        const mat = mesh.material as THREE.MeshStandardMaterial;
-        mat.emissiveIntensity = 0.85 * (1 - e) + 0.15;
-        mat.opacity = 1 - e * 0.55;
-        // Scale down (crack) + fall
-        const shrink = 1 - 0.72 * e;
-        mesh.scale.set(ss.x * shrink, ss.y * (1 - 0.35 * e), ss.z * shrink);
-        mesh.position.set(sp.x, sp.y - 0.55 * e, sp.z);
-        // Slight tumble
+        const mat = clone.material as THREE.MeshStandardMaterial;
+        // Flash then fade — do NOT shrink scale (would destroy cylinder length)
+        mat.emissiveIntensity = 0.9 * (1 - e) + 0.12;
+        mat.opacity = 1 - e * 0.75;
+        clone.position.set(sp.x, sp.y - 0.65 * e, sp.z + 0.08 * e);
         const tumble = new THREE.Quaternion().setFromEuler(
-          new THREE.Euler(0.35 * e, 0.15 * e, 0.55 * e),
+          new THREE.Euler(0.4 * e, 0.2 * e, 0.55 * e),
         );
-        mesh.quaternion.copy(sq).multiply(tumble);
+        clone.quaternion.copy(sq).multiply(tumble);
       }
       if (t < 1) allDone = false;
     }
     if (allDone) {
-      // Leave dark-red remnant briefly (~180ms) then finish
+      // Brief remnant then finish
       const oldest = this.breakAnims[0]!;
-      if (now - oldest.t0 < oldest.duration + 180) return;
+      if (now - oldest.t0 < oldest.duration + 160) return;
       for (const anim of this.breakAnims) {
-        for (const mesh of anim.meshes) {
+        for (const clone of anim.clones) this.disposeBreakClone(clone);
+        for (const mesh of anim.originals) {
           mesh.userData.breaking = false;
-          // hide remnant — Game will remove from model & resync
           mesh.visible = false;
         }
       }
@@ -411,8 +448,8 @@ export class BridgeScene {
     this.wallMode = mode;
     if (mode === 'kiri') this.activeWallLane = OUTER_LANE_KIRI;
     else if (mode === 'kanan') this.activeWallLane = OUTER_LANE_KANAN;
-    else if (mode === 'merintang' || mode === 'lantai') {
-      // Mid-span build plane; walls faintly visible for Merintang / hidden for Lantai.
+    else if (mode === 'melintang' || mode === 'lantai') {
+      // Lantai: mid-span build plane. Melintang: picking uses both outer wall planes (see worldFromClient).
       this.activeWallLane = OUTER_LANE_KIRI;
     }
     this.layerVis = this.visibilityForMode(mode);
@@ -431,7 +468,7 @@ export class BridgeScene {
     if (this.wallMode === 'lantai') return true; // deck uses all lanes
     if (this.wallMode === 'kiri') return lane === OUTER_LANE_KIRI;
     if (this.wallMode === 'kanan') return lane === OUTER_LANE_KANAN;
-    if (this.wallMode === 'merintang') return isOuterLane(lane);
+    if (this.wallMode === 'melintang') return isOuterLane(lane);
     return isOuterLane(lane);
   }
 
@@ -458,11 +495,13 @@ export class BridgeScene {
           wallKanan: 1,
           transverse: LAYER_FADED,
         };
-      case 'merintang':
+      case 'melintang':
+        // Both outer walls pickable at every height (lane 0 & 6).
+        // Opacity ≥ 0.9 keeps node/magnet meshes raycast-enabled.
         return {
           deck: LAYER_SOFT,
-          wallKiri: 0.55,
-          wallKanan: 0.55,
+          wallKiri: 0.95,
+          wallKanan: 0.95,
           transverse: 1,
         };
       default:
@@ -485,7 +524,7 @@ export class BridgeScene {
       case 'kanan':
         pos = new THREE.Vector3(SPAN / 2 + 4, MAX_HEIGHT + 2.8, laneZ(OUTER_LANE_KANAN) - 9);
         break;
-      case 'merintang':
+      case 'melintang':
         pos = new THREE.Vector3(SPAN / 2 + 9, MAX_HEIGHT + 3.5, 0);
         break;
       default:
@@ -539,7 +578,7 @@ export class BridgeScene {
 
   private syncBuildPlane(): void {
     const z =
-      this.wallMode === 'merintang' || this.wallMode === 'lantai'
+      this.wallMode === 'melintang' || this.wallMode === 'lantai'
         ? 0
         : laneZ(this.activeWallLane);
     this.buildPlane.set(new THREE.Vector3(0, 0, 1), -z);
@@ -575,7 +614,7 @@ export class BridgeScene {
     if (this.autoMirrorDepth) {
       return [laneZ(OUTER_LANE_KIRI), laneZ(OUTER_LANE_KANAN)];
     }
-    if (this.wallMode === 'merintang') {
+    if (this.wallMode === 'melintang') {
       const lane = zLane != null && isOuterLane(zLane) ? zLane : this.activeWallLane;
       return [laneZ(lane)];
     }
@@ -655,7 +694,7 @@ export class BridgeScene {
   }
 
   private clearTransverse(): void {
-    // Only clear auto-mirror visuals — keep stored Merintang members.
+    // Only clear auto-mirror visuals — keep stored Melintang members.
     for (const [id, mesh] of this.transverseMeshes) {
       if (mesh.userData.storedTransverse) continue;
       this.transverseGroup.remove(mesh);
@@ -793,9 +832,9 @@ export class BridgeScene {
 
       // Wireframe from wallGridSegmentPairs (same vertices as magnets / nodes).
       // Only one focused wall at a time in auto/kiri/kanan — dual cages at an angle
-      // look like a half-cell shift (parallax). Merintang: faint on both.
+      // look like a half-cell shift (parallax). Melintang: faint on both.
       const drawWire =
-        this.wallMode === 'merintang'
+        this.wallMode === 'melintang'
           ? wallOp >= 0.35
           : this.wallMode === 'auto'
             ? lane === this.activeWallLane
@@ -905,7 +944,7 @@ export class BridgeScene {
       const r = n.isFree ? NODE_RADIUS * 0.85 : NODE_RADIUS * 1.05;
 
       // Supports / free joints live on outer walls — never mid-roadway z=0.
-      // Lantai: deck-level nodes at mid Z; walls: active wall (or both for merintang).
+      // Lantai: deck-level nodes at mid Z; walls: active wall (or both for melintang).
       let zs: number[];
       let layers: string[];
       if (n.isDeck && this.wallMode === 'lantai') {
@@ -914,7 +953,7 @@ export class BridgeScene {
       } else if (
         n.support !== 'none' ||
         this.autoMirrorDepth ||
-        this.wallMode === 'merintang'
+        this.wallMode === 'melintang'
       ) {
         zs = [laneZ(OUTER_LANE_KIRI), laneZ(OUTER_LANE_KANAN)];
         layers = ['wallKiri', 'wallKanan'];
@@ -948,7 +987,8 @@ export class BridgeScene {
         mesh.userData.layer = layer;
         mesh.castShadow = op >= 0.9;
         mesh.visible = op > 0.05;
-        if (op < 0.9) mesh.raycast = () => {};
+        // Melintang needs both walls pickable at every height — never disable raycast.
+        if (op < 0.9 && this.wallMode !== 'melintang') mesh.raycast = () => {};
         this.nodeGroup.add(mesh);
         meshes.push(mesh);
       }
@@ -1213,13 +1253,15 @@ export class BridgeScene {
       const memOp = this.opacityForMember(m);
       for (let i = 0; i < meshes.length; i++) {
         const mesh = meshes[i]!;
+        if (mesh.userData.breaking) continue;
         const z = zs[i]!;
         if (deform) {
-          // TubeGeometry already sits in world segment space
+          // TubeGeometry already sits in world segment space between displaced ends
           mesh.position.set(0, 0, 0);
           mesh.rotation.set(0, 0, 0);
           mesh.scale.set(1, 1, 1);
         } else {
+          // Cylinder unit length along X — scale.x MUST stay endpoint distance L
           mesh.scale.set(L, 1, 1);
           mesh.position.set(mx, my, z);
           mesh.rotation.set(0, 0, angle);
@@ -1267,7 +1309,7 @@ export class BridgeScene {
   }
 
   /**
-   * Stored Merintang members: cylinder from (x1,y1,zFrom) → (x2,y2,zTo).
+   * Stored Melintang members: cylinder from (x1,y1,zFrom) → (x2,y2,zTo).
    * Keyed in transverseMeshes with negative ids to avoid clashing with auto-mirror.
    */
   private syncStoredTransverse(
@@ -1323,6 +1365,7 @@ export class BridgeScene {
         this.transverseMeshes.set(m.id, mesh);
       }
 
+      // Cylinder default is Y-up — scale.y is length between displaced ends
       mesh.scale.set(1, L, 1);
       mesh.position.copy(mid);
       mesh.quaternion.setFromUnitVectors(
@@ -1331,7 +1374,9 @@ export class BridgeScene {
       );
       (mesh.material as THREE.MeshStandardMaterial).color.setHex(color);
       mesh.userData.layerOpacity = this.layerVis.transverse;
-      this.applyOpacityToMesh(mesh, this.layerVis.transverse);
+      if (!mesh.userData.breaking) {
+        this.applyOpacityToMesh(mesh, this.layerVis.transverse);
+      }
     }
 
     for (const [id, mesh] of this.transverseMeshes) {
@@ -1434,8 +1479,8 @@ export class BridgeScene {
     const color = valid ? 0x4fc3f7 : 0xef5350;
     const mat = new THREE.LineBasicMaterial({ color });
 
-    // Merintang: preview line across the roadway gap in Z
-    if (opts?.transverse || this.wallMode === 'merintang') {
+    // Melintang: preview line across the roadway gap in Z
+    if (opts?.transverse || this.wallMode === 'melintang') {
       const pts = [
         new THREE.Vector3(from.x, from.y, laneZ(OUTER_LANE_KIRI)),
         new THREE.Vector3(to.x, to.y, laneZ(OUTER_LANE_KANAN)),
@@ -1541,7 +1586,7 @@ export class BridgeScene {
     });
     const mesh = new THREE.Mesh(geo, mat);
     const gz =
-      this.wallMode === 'lantai' || this.wallMode === 'merintang'
+      this.wallMode === 'lantai'
         ? 0
         : laneZ(this.activeWallLane);
     mesh.position.set(pos.x, this.wallMode === 'lantai' ? 0 : pos.y, gz);
@@ -1554,6 +1599,32 @@ export class BridgeScene {
     this.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.pointer, this.camera);
     const hit = new THREE.Vector3();
+
+    // Melintang camera sits near z≈0 looking along the roadway; the mid-span
+    // build plane (z=0) is nearly parallel to the view ray, so hits break and
+    // only some heights work. Raycast both outer wall planes instead and map
+    // to XY — every grid height on lane 0 and lane 6 is pickable.
+    if (this.wallMode === 'melintang') {
+      let bestDist = Infinity;
+      let bestLane = this.activeWallLane;
+      const candidate = new THREE.Vector3();
+      for (const lane of OUTER_LANES) {
+        const z = laneZ(lane);
+        const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -z);
+        if (!this.raycaster.ray.intersectPlane(plane, candidate)) continue;
+        const d = this.raycaster.ray.origin.distanceTo(candidate);
+        if (d >= 0 && d < bestDist) {
+          bestDist = d;
+          bestLane = lane;
+          hit.copy(candidate);
+        }
+      }
+      if (bestDist < Infinity) {
+        this.activeWallLane = bestLane;
+        return { x: hit.x, y: hit.y };
+      }
+    }
+
     if (!this.raycaster.ray.intersectPlane(this.buildPlane, hit)) {
       const dir = this.raycaster.ray.direction.clone();
       const t = -this.raycaster.ray.origin.z / (dir.z || 1e-6);

@@ -52,10 +52,10 @@ The canvas is a real 3D scene — left-drag to orbit, scroll to zoom, right-drag
 - **Default: one drag / placement = one stick** (single cylinder). No automatic box / dual-side mirror / cross braces.
 - **7 deck lane guides**: outer lanes 1 & 7 (amber) = **dinding truss**; middle 2–6 (blue) = **laluan** (clear roadway).
 - Vertical height snap grids only on outer walls — no mid-plane cage.
-- **Edit fokus: Lantai / Dinding kiri / Dinding kanan / Merintang** — declutter the 3D view so only the active layer is full opacity & pickable (inactive ≈ 0.15 or magnets hidden).
+- **Edit fokus: Lantai / Dinding kiri / Dinding kanan / Melintang** — declutter the 3D view so only the active layer is full opacity & pickable (inactive ≈ 0.15 or magnets hidden).
 - **Lantai** — deck 12×7 only (base rails); walls hidden/faded.
 - **Dinding kiri / kanan** — that outer wall only (lorong 1 / 7); other wall faded, deck softened.
-- **Merintang** connects Kiri (lane 0) ↔ Kanan (lane 6) with a transverse stick — both wall tops faint; click a node, then the matching/near node (or click the same node twice).
+- **Melintang** connects Kiri (lane 0) ↔ Kanan (lane 6) with a transverse stick — both walls pickable at **every height**; click a node on either wall, then the matching/near node on the other (or click the same node twice for a pure cross-brace).
 - Both outer walls are **structural** (Uji paints stress colours on BOTH).
 - Optional **Cermin 3D (lanjutan)** mirrors side-truss to both outer walls — **OFF by default**.
 
@@ -115,6 +115,6 @@ src/
 ## Known limitations
 
 - Physics is still planar axial DSM; multi-rail base is visual-first (one structural chord).
-- Free nodes live in XY; Z lanes are for base rails + wall assignment; Merintang spans Z with `zLaneFrom`/`zLaneTo`.
+- Free nodes live in XY; Z lanes are for base rails + wall assignment; Melintang spans Z with `zLaneFrom`/`zLaneTo`.
 - Single load point (mid-span deck); no multi-load patterns yet.
 - Progressive failure removes overstressed members after a short snap/fall animation; Uji also amplifies node displacements so sticks look bent (toggle **Tunjuk lenturan**).
