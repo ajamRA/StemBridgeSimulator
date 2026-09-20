@@ -83,8 +83,15 @@ export class BridgeScene {
   /** Amplified Uji displacements — sticks sag/bend until Reset/Bina. */
   private displacements: Map<number, Vec2> | null = null;
   private showDeformation = false;
-  private readonly deformScale = 35;
-  private readonly deformClamp = 1.15;
+  /** Classroom visibility multiplier (before global clamp). */
+  /** Educational display amplify (~80× like classroom stick sims). */
+  private readonly deformScale = 80;
+  /** Max |u| after amplify — global so joints + yellow magnets stay coincident. */
+  private readonly deformClamp = 0.85;
+  /** Effective amp: deformScale, or reduced so max node move == deformClamp. */
+  private deformAmp = 80;
+  /** Amplified XY offsets keyed by design "x,y" for grid magnets / wireframes. */
+  private dispByXY = new Map<string, Vec2>();
   /** Break / pulse feedback */
   private breakAnims: BreakAnim[] = [];
   private pulseIds = new Set<number>();
@@ -199,18 +206,70 @@ export class BridgeScene {
   }
 
 
-  /** Amplify solver displacements for classroom visibility (scale × clamp). */
+  /**
+   * Amplify solver displacements for classroom visibility.
+   * IMPORTANT: one global scale for all nodes (never per-node clamp) so
+   * stick endpoints stay coincident with the same deformed joints / yellow magnets.
+   */
   private amplifyDisp(d: Vec2 | undefined): Vec2 {
     if (!d) return { x: 0, y: 0 };
-    let dx = d.x * this.deformScale;
-    let dy = d.y * this.deformScale;
-    const mag = Math.hypot(dx, dy);
-    if (mag > this.deformClamp && mag > 1e-12) {
-      const s = this.deformClamp / mag;
-      dx *= s;
-      dy *= s;
+    return { x: d.x * this.deformAmp, y: d.y * this.deformAmp };
+  }
+
+  /** Recompute global deformAmp from the current displacement field. */
+  private recomputeDeformAmp(): void {
+    this.deformAmp = this.deformScale;
+    if (!this.displacements || this.displacements.size === 0) return;
+    let maxMag = 0;
+    for (const d of this.displacements.values()) {
+      maxMag = Math.max(maxMag, Math.hypot(d.x, d.y));
     }
-    return { x: dx, y: dy };
+    if (maxMag < 1e-15) return;
+    const rawMax = maxMag * this.deformScale;
+    if (rawMax > this.deformClamp) {
+      this.deformAmp = this.deformClamp / maxMag;
+    }
+  }
+
+  /** Cache amplified offsets by design XY so grid magnets match stick ends. */
+  private rebuildDispLookup(nodes: NodeDef[]): void {
+    this.dispByXY.clear();
+    if (!this.showDeformation || !this.displacements) return;
+    for (const n of nodes) {
+      if (n.isApex) continue;
+      const key = `${n.x.toFixed(4)},${n.y.toFixed(4)}`;
+      this.dispByXY.set(key, this.amplifyDisp(this.displacements.get(n.id)));
+    }
+  }
+
+  private gridOffset(x: number, y: number): Vec2 {
+    if (!this.showDeformation) return { x: 0, y: 0 };
+    return this.dispByXY.get(`${x.toFixed(4)},${y.toFixed(4)}`) ?? { x: 0, y: 0 };
+  }
+
+  /** Move yellow magnets / wireframes to the same deformed XY as sticks. */
+  private syncGridDeformation(): void {
+    for (const child of this.gridGroup.children) {
+      const dx0 = child.userData.designX as number | undefined;
+      if (dx0 != null) {
+        const ox = dx0;
+        const oy = child.userData.designY as number;
+        const oz = child.userData.designZ as number;
+        const d = this.gridOffset(ox, oy);
+        child.position.set(ox + d.x, oy + d.y, oz);
+        continue;
+      }
+      const designPts = child.userData.designPts as
+        | { x: number; y: number; z: number }[]
+        | undefined;
+      if (!designPts || !(child instanceof THREE.LineSegments)) continue;
+      const vecs = designPts.map((p) => {
+        const d = this.gridOffset(p.x, p.y);
+        return new THREE.Vector3(p.x + d.x, p.y + d.y, p.z);
+      });
+      child.geometry.dispose();
+      child.geometry = new THREE.BufferGeometry().setFromPoints(vecs);
+    }
   }
 
   /** Node XY after optional Uji deformation. */
@@ -225,11 +284,19 @@ export class BridgeScene {
   setDeformation(displacements: Map<number, Vec2> | null, enabled: boolean): void {
     this.displacements = displacements;
     this.showDeformation = enabled && displacements != null && displacements.size > 0;
+    this.recomputeDeformAmp();
+    if (!this.showDeformation) {
+      this.dispByXY.clear();
+      this.syncGridDeformation();
+    }
   }
 
   clearDeformation(): void {
     this.displacements = null;
     this.showDeformation = false;
+    this.deformAmp = this.deformScale;
+    this.dispByXY.clear();
+    this.syncGridDeformation();
   }
 
   getShowDeformation(): boolean {
@@ -753,26 +820,26 @@ export class BridgeScene {
     // Deck roadway guides + magnets — exact createGridNodes / laneZ coords (no Y offset)
     if (showDeck) {
       const { road, wall } = deckLaneSegmentPairs();
-      this.gridGroup.add(
-        new THREE.LineSegments(
-          new THREE.BufferGeometry().setFromPoints(road.map(toVec3)),
-          new THREE.LineBasicMaterial({
-            color: 0x90caf9,
-            transparent: true,
-            opacity: 0.4 * deckOp,
-          }),
-        ),
+      const roadLine = new THREE.LineSegments(
+        new THREE.BufferGeometry().setFromPoints(road.map(toVec3)),
+        new THREE.LineBasicMaterial({
+          color: 0x90caf9,
+          transparent: true,
+          opacity: 0.4 * deckOp,
+        }),
       );
-      this.gridGroup.add(
-        new THREE.LineSegments(
-          new THREE.BufferGeometry().setFromPoints(wall.map(toVec3)),
-          new THREE.LineBasicMaterial({
-            color: 0xffb74d,
-            transparent: true,
-            opacity: 0.75 * deckOp,
-          }),
-        ),
+      roadLine.userData.designPts = road.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+      this.gridGroup.add(roadLine);
+      const wallLine = new THREE.LineSegments(
+        new THREE.BufferGeometry().setFromPoints(wall.map(toVec3)),
+        new THREE.LineBasicMaterial({
+          color: 0xffb74d,
+          transparent: true,
+          opacity: 0.75 * deckOp,
+        }),
       );
+      wallLine.userData.designPts = wall.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+      this.gridGroup.add(wallLine);
 
       const magnetGeo = new THREE.SphereGeometry(0.08, 10, 10);
       const roadMat = new THREE.MeshStandardMaterial({
@@ -801,6 +868,9 @@ export class BridgeScene {
         const outer = isOuterLane(p.lane);
         const mesh = new THREE.Mesh(magnetGeo, outer ? wallDeckMat : roadMat);
         mesh.position.set(p.x, p.y, p.z);
+        mesh.userData.designX = p.x;
+        mesh.userData.designY = p.y;
+        mesh.userData.designZ = p.z;
         mesh.userData.deckMagnet = true;
         mesh.userData.layer = 'deck';
         mesh.userData.xIndex = Math.round(p.x / GRID);
@@ -840,17 +910,18 @@ export class BridgeScene {
             ? lane === this.activeWallLane
             : active;
       if (drawWire) {
-        const vPts = wallGridSegmentPairs(lane).map(toVec3);
-        this.gridGroup.add(
-          new THREE.LineSegments(
-            new THREE.BufferGeometry().setFromPoints(vPts),
-            new THREE.LineBasicMaterial({
-              color: active ? 0xffee58 : 0xffa726,
-              transparent: true,
-              opacity: (active ? 0.55 : 0.22) * wallOp,
-            }),
-          ),
+        const vRaw = wallGridSegmentPairs(lane);
+        const vPts = vRaw.map(toVec3);
+        const wallWire = new THREE.LineSegments(
+          new THREE.BufferGeometry().setFromPoints(vPts),
+          new THREE.LineBasicMaterial({
+            color: active ? 0xffee58 : 0xffa726,
+            transparent: true,
+            opacity: (active ? 0.55 : 0.22) * wallOp,
+          }),
         );
+        wallWire.userData.designPts = vRaw.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+        this.gridGroup.add(wallWire);
       }
 
       const showMagnets = wallOp >= 0.5;
@@ -861,6 +932,9 @@ export class BridgeScene {
           if (p.y === 0 && showDeck && deckOp >= 0.5) continue;
           const mesh = new THREE.Mesh(heightGeo, heightMat);
           mesh.position.set(p.x, p.y, p.z);
+          mesh.userData.designX = p.x;
+          mesh.userData.designY = p.y;
+          mesh.userData.designZ = p.z;
           mesh.userData.wallMagnet = true;
           mesh.userData.layer = isKiri ? 'wallKiri' : 'wallKanan';
           mesh.userData.zLane = lane;
@@ -869,6 +943,8 @@ export class BridgeScene {
         }
       }
     }
+    // Keep magnets aligned if Uji lenturan is already active
+    this.syncGridDeformation();
   }
 
   private buildAbutments(): void {
@@ -919,6 +995,7 @@ export class BridgeScene {
   }
 
   setNodes(nodes: NodeDef[]): void {
+    this.rebuildDispLookup(nodes);
     while (this.nodeGroup.children.length) {
       const c = this.nodeGroup.children[0] as THREE.Mesh;
       this.nodeGroup.remove(c);
@@ -994,6 +1071,7 @@ export class BridgeScene {
       }
       this.nodeMeshes.set(n.id, meshes);
     }
+    this.syncGridDeformation();
   }
 
   syncMembers(
@@ -1002,6 +1080,7 @@ export class BridgeScene {
     results: MemberResult[] | null,
     highlightFailed = false,
   ): void {
+    this.rebuildDispLookup(nodes);
     const resultMap = new Map(results?.map((r) => [r.id, r]) ?? []);
     const deform = this.showDeformation;
 
@@ -1182,20 +1261,24 @@ export class BridgeScene {
       const zs = isBase ? [laneZ(m.zLane!)] : this.wallZsForMember(m.zLane);
       const radius = isBase ? BASE_RADIUS : MEMBER_RADIUS;
 
-      // Extra mid bow under load (visible lenturan) from amplified uy + compression
-      let bow = 0;
-      if (deform) {
-        const d1 = this.amplifyDisp(this.displacements?.get(m.n1));
-        const d2 = this.amplifyDisp(this.displacements?.get(m.n2));
-        const avgSag = -((d1.y + d2.y) / 2); // downward positive sag
-        const compBoost = r && r.force < 0 ? 0.12 * Math.min(1, r.utilization) : 0.03;
-        bow = Math.min(0.4, Math.max(0, avgSag * 0.35) + compBoost);
-      }
+      // Mid-stick bend = educational visual from utilisation (NOT beam FEM).
+      // Endpoints always = same displaced joints as yellow magnets / nodeMeshes.
+      const ratio = r ? Math.min(2.5, Math.max(0, r.utilization)) : 0;
+      const midOffsetY =
+        deform && ratio > 0.05
+          ? -Math.min(0.55, 0.025 + ratio * 0.32)
+          : 0;
+      const useCurve = deform && Math.abs(midOffsetY) > 1e-6;
 
       let meshes = this.memberMeshes.get(m.id);
       if (meshes?.some((mesh) => mesh.userData.breaking)) continue;
 
-      const deformKey = deform ? `t:${bow.toFixed(3)}` : 'cyl';
+      // Key: mode + ends + mid offset so geometry rebuilds when joints move
+      const deformKey = useCurve
+        ? `crm:${a.x.toFixed(3)},${a.y.toFixed(3)},${b.x.toFixed(3)},${b.y.toFixed(3)},${midOffsetY.toFixed(3)}`
+        : deform
+          ? `cyl:${a.x.toFixed(3)},${a.y.toFixed(3)},${b.x.toFixed(3)},${b.y.toFixed(3)}`
+          : 'cyl';
       const needRebuild =
         !meshes ||
         meshes.length !== zs.length ||
@@ -1211,35 +1294,38 @@ export class BridgeScene {
         }
         meshes = zs.map((z) => {
           let mesh: THREE.Mesh;
-          if (deform) {
-            // Tube along displaced ends with slight mid sag (looks bent)
-            const nx = L > 1e-9 ? -dy / L : 0;
-            const ny = L > 1e-9 ? dx / L : 1;
-            // Prefer bow toward gravity (down)
-            const sign = ny >= 0 ? -1 : 1;
-            const ctrl = new THREE.Vector3(
-              mx + nx * bow * 0.15,
-              my - bow + ny * bow * 0.05 * sign,
-              z,
-            );
-            const curve = new THREE.QuadraticBezierCurve3(
-              new THREE.Vector3(a.x, a.y, z),
-              ctrl,
-              new THREE.Vector3(b.x, b.y, z),
+          if (useCurve) {
+            // CatmullRom mid control: endpoints = displaced joints; sag from ratio
+            const p0 = new THREE.Vector3(a.x, a.y, z);
+            const p1 = new THREE.Vector3(b.x, b.y, z);
+            const control = p0.clone().lerp(p1, 0.5).add(new THREE.Vector3(0, midOffsetY, 0));
+            const curve = new THREE.CatmullRomCurve3(
+              [p0, control, p1],
+              false,
+              'centripetal',
             );
             const geo = new THREE.TubeGeometry(curve, 16, radius, 8, false);
             const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
             mesh = new THREE.Mesh(geo, mat);
+            // Tube verts already in world segment space — identity transform
+            mesh.position.set(0, 0, 0);
+            mesh.rotation.set(0, 0, 0);
+            mesh.scale.set(1, 1, 1);
           } else {
             const geo = new THREE.CylinderGeometry(radius, radius, 1, 8);
-            geo.rotateZ(Math.PI / 2);
+            geo.rotateZ(Math.PI / 2); // unit length along +X
             const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
             mesh = new THREE.Mesh(geo, mat);
+            // scale.x = endpoint distance — never shrink for break anim
+            mesh.scale.set(L, 1, 1);
+            mesh.position.set(mx, my, z);
+            mesh.rotation.set(0, 0, angle);
           }
           mesh.userData.memberId = m.id;
           mesh.userData.memberRole = m.role;
           mesh.userData.zLane = m.zLane;
           mesh.userData.deformKey = deformKey;
+          mesh.userData.curvedStick = useCurve;
           mesh.castShadow = true;
           mesh.receiveShadow = true;
           this.memberGroup.add(mesh);
@@ -1255,13 +1341,11 @@ export class BridgeScene {
         const mesh = meshes[i]!;
         if (mesh.userData.breaking) continue;
         const z = zs[i]!;
-        if (deform) {
-          // TubeGeometry already sits in world segment space between displaced ends
+        if (mesh.userData.curvedStick) {
           mesh.position.set(0, 0, 0);
           mesh.rotation.set(0, 0, 0);
           mesh.scale.set(1, 1, 1);
         } else {
-          // Cylinder unit length along X — scale.x MUST stay endpoint distance L
           mesh.scale.set(L, 1, 1);
           mesh.position.set(mx, my, z);
           mesh.rotation.set(0, 0, angle);
@@ -1272,34 +1356,6 @@ export class BridgeScene {
         mesh.userData.deformKey = deformKey;
         mesh.userData.layerOpacity = memOp;
         this.applyOpacityToMesh(mesh, memOp);
-      }
-
-      // If deformed tube ends changed, rebuild geometry in place
-      if (deform && meshes[0] && meshes[0].userData.geomKey !== `${a.x.toFixed(3)},${b.x.toFixed(3)},${a.y.toFixed(3)},${b.y.toFixed(3)},${bow.toFixed(3)}`) {
-        const geomKey = `${a.x.toFixed(3)},${b.x.toFixed(3)},${a.y.toFixed(3)},${b.y.toFixed(3)},${bow.toFixed(3)}`;
-        for (let i = 0; i < meshes.length; i++) {
-          const mesh = meshes[i]!;
-          const z = zs[i]!;
-          const nx = L > 1e-9 ? -dy / L : 0;
-          const ny = L > 1e-9 ? dx / L : 1;
-          const sign = ny >= 0 ? -1 : 1;
-          const ctrl = new THREE.Vector3(
-            mx + nx * bow * 0.15,
-            my - bow + ny * bow * 0.05 * sign,
-            z,
-          );
-          const curve = new THREE.QuadraticBezierCurve3(
-            new THREE.Vector3(a.x, a.y, z),
-            ctrl,
-            new THREE.Vector3(b.x, b.y, z),
-          );
-          mesh.geometry.dispose();
-          mesh.geometry = new THREE.TubeGeometry(curve, 16, radius, 8, false);
-          mesh.userData.geomKey = geomKey;
-          mesh.position.set(0, 0, 0);
-          mesh.rotation.set(0, 0, 0);
-          mesh.scale.set(1, 1, 1);
-        }
       }
     }
 

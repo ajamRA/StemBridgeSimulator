@@ -1048,6 +1048,8 @@ export class Game {
     this.tested = false;
     this.lastResults = null;
     this.lastDisplacements = null;
+    // Reset yellow magnets + joint meshes to design XY (match sticks)
+    this.refreshNodes();
     this.syncScene();
     this.updateLoadArrow();
   }
